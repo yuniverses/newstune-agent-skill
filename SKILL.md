@@ -235,6 +235,17 @@ The helper creates `POST /api/v1/handoffs`, opens the returned `openUrl`, then p
 
 Use direct Public API calls instead of handoff only when the user has already confirmed all required fields and no browser interaction is needed. Examples: creating a private series from confirmed host IDs, queuing `script_to_audio`, queuing `material_to_podcast`, polling jobs, or rendering standalone TTS.
 
+### Guidance deep links (no handoff needed)
+
+When you only need to point the user at a UI — no machine-readable result to poll — link directly instead of creating a handoff. The web app opens the matching interface automatically, and these links survive the login redirect, so they are safe to send to logged-out users:
+
+- `https://podcast.newstune.app/beta/#api-keys` — API key management modal
+- `https://podcast.newstune.app/beta/#voice-clone` — voice cloning (microphone) flow
+- `https://podcast.newstune.app/beta/#host-create` — create a new host
+- `https://podcast.newstune.app/beta/#agent-skills` — Agent Skills install instructions
+
+Prefer a web handoff when you need to receive the result (selected voice/host IDs, created series) back in the conversation.
+
 ## Host Selection Contract
 
 Podcast generation requires at least one host with a usable TTS voice. A two-person episode should normally use two host IDs. Do not create a series with empty `hostIds` unless the user explicitly wants NewsTune's backend default hosts.

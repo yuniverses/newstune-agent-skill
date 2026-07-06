@@ -17,15 +17,17 @@
 把下面這段貼給 Claude Code 或 Codex，它會自動完成安裝並開始 onboarding：
 
 ```text
-Install the NewsTune agent skill:
-1. Pick the skills directory for your harness:
-   - Claude Code: ~/.claude/skills/newstune-agent-api
-   - Codex: ~/.codex/skills/newstune-agent-api (or ~/.agents/skills/newstune-agent-api)
-2. git clone https://github.com/yuniverses/newstune-agent-skill into that directory
-   (create parent directories if needed; if the directory already exists, stop and tell me).
-3. Invoke the newstune-agent-api skill to start onboarding, and walk me through
-   setting up my NewsTune API key and the project journal.
+請幫我安裝 NewsTune Agent Skill（安裝後你就能直接操作 NewsTune：複製聲音、建立 podcast 系列、自動記錄專案進度並排程生成節目）。
+
+步驟：
+1. 依你的環境選擇 skills 目錄：
+   - Claude Code：~/.claude/skills/newstune-agent-api
+   - Codex：~/.codex/skills/newstune-agent-api（或 ~/.agents/skills/newstune-agent-api）
+2. 執行 git clone https://github.com/yuniverses/newstune-agent-skill 到該目錄（必要時先建立上層資料夾；若目錄已存在，先停下來告訴我，不要覆蓋）。
+3. 安裝完成後，呼叫 newstune-agent-api skill 開始首次引導：請它介紹功能，並協助我建立 NewsTune API key、完成基本設定。
 ```
+
+> 這段 prompt 是 canonical 版本——NewsTune 網頁前端「Agent Skills」彈窗內的安裝 prompt 與此逐字同步；改其中一邊時務必同步另一邊。
 
 ### 方法二：手動 git clone
 
