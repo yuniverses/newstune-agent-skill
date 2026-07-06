@@ -1,0 +1,5 @@
+.private/
+*.bak-newstune
+.DS_Store
+node_modules/
+logs/
