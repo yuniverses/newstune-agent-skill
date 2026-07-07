@@ -82,7 +82,7 @@ Context assembled for the engine: transcript tail (~30KB, lenient JSONL extracti
 
 Engine invocation (config `engine`):
 
-- `claude`: `claude --bare -p <prompt>`
+- `claude`: `claude -p --model <engineModel> <prompt>`（不用 `--bare`——claude 2.1.202 起它連登入憑證都不載入，會得到 Not logged in；防遞迴靠 `NEWSTUNE_JOURNAL_SKIP=1`。判斷模型預設 `claude-haiku-4-5-20251001`，可用 config.json 的 `engineModel` 覆寫）
 - `codex`: `codex exec --skip-git-repo-check -s read-only --output-last-message <tmpfile> <prompt>`
 
 Both run with `NEWSTUNE_JOURNAL_SKIP=1` and a 5-minute default timeout (`--timeout-ms` to override).
@@ -229,6 +229,6 @@ Common situations:
 - **Recorded too often / too rarely**: tune `cooldownHours`, `maxPerDay`, `minTranscriptBytes` in `config.json` directly, or re-run `install` (existing values are preserved unless flags override them).
 - **Temporarily stop journaling**: `journal_setup.mjs pause`, later `resume`. This flips `config.enabled`; hooks stay installed and cost <100ms per Stop.
 - **Remove completely**: `journal_setup.mjs uninstall` (removes only our hook entries, keeps `config.json` and all journal data), plus `unschedule --project <slug>` per scheduled project. Restore any hook file from `<file>.bak-newstune` if needed.
-- **Engine failures**: the record layer never crashes the CLI; look for `[record] error` lines (unparseable engine output, timeouts, missing binary). Verify the engine works headless: `claude --bare -p 'hi'` or `codex exec --skip-git-repo-check -s read-only 'hi'`.
+- **Engine failures**: the record layer never crashes the CLI; look for `[record] error` lines (unparseable engine output, timeouts, missing binary). Verify the engine works headless: `claude -p 'hi'` or `codex exec --skip-git-repo-check -s read-only 'hi'`.
 - **Scheduled run did nothing**: check `logs/schedule.<slug>.log` / `.err.log`, then `launchctl print gui/$(id -u)/com.newstune.podcast.<slug>`. A skipped issue for lack of material is expected behavior, not a failure.
 - **Read endpoints return 404**: the backend deploy has not landed; `bind`/`collect` degrade to `podcast.json`/`ledger.json` automatically with a one-line stderr notice (see `references/api-v1.md`).

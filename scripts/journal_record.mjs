@@ -112,11 +112,17 @@ function localDateKey(date = new Date()) {
   return `${y}-${m}-${d}`;
 }
 
+// Cheap model for the background judgment call — the judge reads ~30KB and
+// returns ~1KB of JSON up to maxPerDay times per project; it does not need the
+// user's (often top-tier) default model. Override with config.engineModel.
+const DEFAULT_CLAUDE_JUDGE_MODEL = 'claude-haiku-4-5-20251001';
+
 function loadConfig() {
   const raw = readJsonFile(path.join(getConfigDir(), 'config.json'));
   if (!raw) return null;
   return {
     engine: raw.engine === 'codex' ? 'codex' : 'claude',
+    engineModel: typeof raw.engineModel === 'string' && raw.engineModel.trim() ? raw.engineModel.trim() : DEFAULT_CLAUDE_JUDGE_MODEL,
     journalRoot: process.env.NEWSTUNE_JOURNAL_ROOT || String(raw.journalRoot || ''),
   };
 }
@@ -247,7 +253,7 @@ function buildContext({ cwd, transcriptPath, projectDir, sinceIso }) {
 
 // --- engine dispatch --------------------------------------------------------
 
-function runEngine({ engine, engineCmd, prompt, timeoutMs }) {
+function runEngine({ engine, engineCmd, engineModel, prompt, timeoutMs }) {
   const env = { ...process.env, NEWSTUNE_JOURNAL_SKIP: '1' };
   const spawnOptions = { encoding: 'utf8', env, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 };
 
@@ -286,9 +292,13 @@ function runEngine({ engine, engineCmd, prompt, timeoutMs }) {
     }
   }
 
-  const res = spawnSync('claude', ['--bare', '-p', prompt], spawnOptions);
+  // No --bare: as of claude 2.1.202 it also skips loading login credentials
+  // ("Not logged in"). Recursion is already prevented by NEWSTUNE_JOURNAL_SKIP
+  // in the child env (the gate's check #2), so a plain -p call is safe.
+  const res = spawnSync('claude', ['-p', '--model', engineModel || DEFAULT_CLAUDE_JUDGE_MODEL, prompt], spawnOptions);
   if (res.error) throw res.error;
-  if (res.status !== 0) throw new Error(`claude 結束碼 ${res.status}：${String(res.stderr || '').slice(0, 500)}`);
+  // claude -p prints errors to stdout, not stderr — capture both.
+  if (res.status !== 0) throw new Error(`claude 結束碼 ${res.status}：${String(res.stderr || res.stdout || '').slice(0, 500)}`);
   return String(res.stdout || '');
 }
 
@@ -447,9 +457,10 @@ async function main() {
 
   const engine = args.engine === 'codex' || args.engine === 'claude' ? args.engine : config.engine;
   const engineCmd = args['engine-cmd'] || process.env.NEWSTUNE_RECORD_ENGINE_CMD || '';
+  const engineModel = String(args['engine-model'] || config.engineModel || DEFAULT_CLAUDE_JUDGE_MODEL);
   const timeoutMs = Number(args['timeout-ms'] || DEFAULT_ENGINE_TIMEOUT_MS);
 
-  const output = runEngine({ engine, engineCmd, prompt, timeoutMs });
+  const output = runEngine({ engine, engineCmd, engineModel, prompt, timeoutMs });
   const result = extractFirstJsonObject(output);
   if (!result || typeof result.record !== 'boolean') {
     appendLog(`[record] error project=${slug} 原因：引擎輸出無法解析為判斷 JSON（前 200 字：${String(output).slice(0, 200).replace(/\s+/g, ' ')}）`);
