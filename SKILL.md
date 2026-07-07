@@ -149,7 +149,7 @@ The journal subsystem records notable engineering sessions (decisions, pivots, m
 2. **Record** — `scripts/journal_record.mjs`. Background judge/writer spawned by the gate. Assembles session context (transcript tail, git log since the last record, recent entries, `project.md`), asks the configured engine (`claude` or `codex`) whether the session is worth recording, and writes the entry file plus `project.md` when missing. It never crashes loudly; every failure is logged.
 3. **Setup** — `scripts/journal_setup.mjs`. `install`/`uninstall` (safe hook merge into Claude/Codex settings with `.bak-newstune` backups), `pause`/`resume`, `status`, and `schedule`/`unschedule` for launchd.
 
-`scripts/episode_from_journal.mjs` bridges journal to NewsTune episodes with `bind`/`collect`/`submit`/`status`.
+`scripts/episode_from_journal.mjs` bridges journal to NewsTune episodes with `bind`/`collect`/`submit`/`publish`/`status`.
 
 Read `references/journal.md` for the full specification: data layout, entry frontmatter schema, judging criteria, hook payload shapes, launchd details, and troubleshooting.
 
@@ -176,6 +176,14 @@ Manual and scheduled generation follow the same flow; only the trigger differs.
      --title "<episode title>" --summary "<episode summary>" --topics a,b,c
    ```
    `submit` records the episode in `ledger.json`, advances `lastCoveredAt`, and appends a `type: progress` journal entry.
+
+Episode visibility: scheduled/manual episodes submitted into a **public** series default to `public` — a public show's episodes should air by default. Everything else defaults to `private`. Override per run with `--visibility public|private` on `submit`, or persistently by setting `episodeVisibility` in the project's `podcast.json` (flag > `podcast.json` > series default). Publishing an episode retroactively (or unpublishing one) uses:
+
+```bash
+node scripts/episode_from_journal.mjs publish --project <slug> --episode <n> [--private]
+```
+
+`publish` prints the episode's `publicSlug` and full `publicUrl` (`https://podcast.newstune.app` + `/zh-tw` for `zh`/`zh-TW`/`zh-Hant*` series — not `zh-Hans`/`zh-CN` — + `/episode/<publicSlug>/`) and syncs `ledger.json` (unpublish clears the slug). It requires `publish:write`; a 404 means the backend PATCH endpoint is not deployed yet — the script degrades with a stderr note instead of failing.
 
 To run this on a schedule (macOS launchd):
 

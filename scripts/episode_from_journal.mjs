@@ -12,6 +12,8 @@ const scriptPath = fileURLToPath(import.meta.url);
 const POLL_INTERVAL_MS = 1500;
 const DEFAULT_TIMEOUT_MS = 600000;
 const VALID_MODES = ['script_to_audio', 'material_to_podcast'];
+const VALID_VISIBILITIES = ['public', 'private'];
+const PUBLIC_SITE_BASE_URL = 'https://podcast.newstune.app';
 // Entries whose type appears earlier in this list are emitted first in the material pack.
 const TYPE_RANK = { decision: 0, pivot: 1, milestone: 2 };
 const DEFAULT_TYPE_RANK = 3;
@@ -20,18 +22,20 @@ const MAX_PRIOR_EPISODES = 20;
 
 function usage(exitCode = 0) {
   const stream = exitCode === 0 ? process.stdout : process.stderr;
-  stream.write(`NewsTune journal → podcast 集數工具（bind / collect / submit / status）
+  stream.write(`NewsTune journal → podcast 集數工具（bind / collect / submit / publish / status）
 
 用法：
   node scripts/episode_from_journal.mjs bind --project <slug> --series-id <id> [--snapshot-json <json|檔案路徑>] [--cadence weekly] [--mode script_to_audio|material_to_podcast]
   node scripts/episode_from_journal.mjs collect --project <slug> [--since <ISO 時間>] [--cwd <專案程式碼目錄>]
-  node scripts/episode_from_journal.mjs submit --project <slug> --script-file <path> --title <標題> --summary <摘要> [--topics a,b,c] [--host-guidance <文字>] [--timeout-ms ${DEFAULT_TIMEOUT_MS}]
+  node scripts/episode_from_journal.mjs submit --project <slug> --script-file <path> --title <標題> --summary <摘要> [--topics a,b,c] [--host-guidance <文字>] [--visibility public|private] [--timeout-ms ${DEFAULT_TIMEOUT_MS}]
+  node scripts/episode_from_journal.mjs publish --project <slug> --episode <n> [--private]
   node scripts/episode_from_journal.mjs status --project <slug>
 
 子命令說明：
   bind     綁定 journal 專案到 NewsTune series：先呼叫 GET /api/v1/series/:id 取得快照；
            若後端回 404（端點尚未部署），改用 --snapshot-json（JSON 字串或檔案路徑，
-           可直接貼 POST /api/v1/series 的回應）。結果寫入 <journalRoot>/<slug>/podcast.json。
+           可直接貼 POST /api/v1/series 的回應）。結果寫入 <journalRoot>/<slug>/podcast.json，
+           並回報未來 submit 預設使用的 episodeVisibility。
   collect  純資料彙整（不呼叫任何 LLM）：輸出素材包 JSON 到 stdout，內容包含
            lastCoveredAt 之後的 journal entries（decision/pivot/milestone 排前）、
            git 摘要（--cwd 指定 repo，預設目前目錄；非 git 專案容忍為空）、
@@ -39,6 +43,11 @@ function usage(exitCode = 0) {
   submit   以 script_to_audio 模式提交完成的腳本（POST /api/v1/series/:id/episodes，
            帶 Idempotency-Key 與 summary/topics/hostGuidance），輪詢 job 到終態；
            成功後更新 ledger.json 與 lastCoveredAt，並在 entries/ 追加一則 type: progress 的「本集已生成」記錄。
+           集數可見度解析順序：--visibility 旗標 → podcast.json 的 episodeVisibility →
+           系列預設（公開系列的排程集數預設公開；私人系列預設私人）。
+  publish  事後切換單集可見度（PATCH /api/v1/series/:id/episodes/:n/visibility，需 publish:write）：
+           預設改為 public，帶 --private 則改回 private；成功時輸出 publicSlug 與 publicUrl，
+           並回填 ledger.json。後端回 404 視為端點尚未部署，降級為提示而不失敗。
   status   輸出 podcast.json 與 ledger.json 摘要。
 
 路徑解析（可供測試覆寫）：
@@ -380,10 +389,47 @@ function buildSeriesSnapshot(series) {
     language: asString(source.language) || null,
     hostIds: asStringArray(source.hostIds),
     episodeFormat: asString(source.episodeFormat) || null,
+    visibility: normalizeVisibility(source.visibility),
   };
   const duration = Number(source.targetDurationMinutes);
   if (Number.isFinite(duration) && duration > 0) snapshot.targetDurationMinutes = duration;
   return snapshot;
+}
+
+function normalizeVisibility(value) {
+  const text = asString(value).toLowerCase();
+  return VALID_VISIBILITIES.includes(text) ? text : null;
+}
+
+// Resolution order (documented in SKILL.md / references/journal.md):
+// --visibility flag → podcast.json episodeVisibility → series default.
+// A public show's scheduled episodes should air by default, so a public series
+// snapshot defaults to 'public'; everything else defaults to 'private'.
+function resolveEpisodeVisibility(args, podcast) {
+  if (args && args.visibility !== undefined) {
+    const flag = normalizeVisibility(args.visibility === true ? '' : args.visibility);
+    if (!flag) throw new Error(`--visibility 必須是 ${VALID_VISIBILITIES.join(' 或 ')}。`);
+    return { visibility: flag, source: 'flag' };
+  }
+  const configured = normalizeVisibility(podcast?.episodeVisibility);
+  if (configured) return { visibility: configured, source: 'podcast.json' };
+  const seriesVisibility = normalizeVisibility(podcast?.seriesSnapshot?.visibility);
+  return {
+    visibility: seriesVisibility === 'public' ? 'public' : 'private',
+    source: 'series-default',
+  };
+}
+
+function buildEpisodePublicUrl(language, publicSlug) {
+  const slug = asString(publicSlug);
+  if (!slug) return null;
+  // Mirror the backend canonical rule (src/lib/publicRender/urls.mjs): only
+  // zh / zh-tw* / zh-hant* map to the /zh-tw prefix; zh-Hans/zh-CN and
+  // everything else use the English path.
+  const lang = asString(language).toLowerCase();
+  const isZhTw = lang === 'zh' || lang.startsWith('zh-tw') || lang.startsWith('zh-hant');
+  const localePath = isZhTw ? '/zh-tw' : '';
+  return `${PUBLIC_SITE_BASE_URL}${localePath}/episode/${encodeURIComponent(slug)}/`;
 }
 
 function loadSnapshotInput(rawInput) {
@@ -438,6 +484,7 @@ node ${scriptPath} bind --project ${slug} --series-id ${seriesId} --snapshot-jso
   fs.mkdirSync(projectDir, { recursive: true });
   const podcastPath = path.join(projectDir, 'podcast.json');
   const existing = readJsonFile(podcastPath, null);
+  const existingEpisodeVisibility = normalizeVisibility(existing?.episodeVisibility);
   const podcast = {
     seriesId,
     seriesSnapshot: buildSeriesSnapshot(seriesRaw),
@@ -446,8 +493,13 @@ node ${scriptPath} bind --project ${slug} --series-id ${seriesId} --snapshot-jso
     materialConsent: existing?.materialConsent === true,
     extraSources: Array.isArray(existing?.extraSources) ? existing.extraSources : [],
     lastCoveredAt: existing?.lastCoveredAt ?? null,
+    ...(existingEpisodeVisibility ? { episodeVisibility: existingEpisodeVisibility } : {}),
   };
   writeJsonFile(podcastPath, podcast);
+
+  const episodeVisibilityDefault = resolveEpisodeVisibility({}, podcast);
+  process.stderr.write(`[newstune] 未帶 --visibility 時，未來 submit 的集數可見度預設為 ${episodeVisibilityDefault.visibility}`
+    + `（來源：${episodeVisibilityDefault.source}）。可在 podcast.json 設定 episodeVisibility 覆寫。\n`);
 
   process.stdout.write(`${JSON.stringify({
     ok: true,
@@ -455,6 +507,8 @@ node ${scriptPath} bind --project ${slug} --series-id ${seriesId} --snapshot-jso
     source: snapshotSource,
     podcastPath,
     podcast,
+    episodeVisibilityDefault: episodeVisibilityDefault.visibility,
+    episodeVisibilityDefaultSource: episodeVisibilityDefault.source,
   }, null, 2)}\n`);
 }
 
@@ -578,24 +632,51 @@ async function runSubmit(args) {
   const hostGuidance = typeof args['host-guidance'] === 'string' ? args['host-guidance'].trim() : '';
   const timeoutMs = Number(args['timeout-ms'] || DEFAULT_TIMEOUT_MS);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('--timeout-ms 必須是正整數。');
+  const resolvedVisibility = resolveEpisodeVisibility(args, podcast);
+  process.stderr.write(`[newstune] 本集 visibility=${resolvedVisibility.visibility}（來源：${resolvedVisibility.source}）。\n`);
 
   const requestBody = {
     mode: 'script_to_audio',
     title,
     script,
     summary,
+    visibility: resolvedVisibility.visibility,
     ...(topics.length ? { topics } : {}),
     ...(hostGuidance ? { hostGuidance } : {}),
   };
   // If the backend has not deployed summary/topics/hostGuidance yet it ignores the
   // unknown fields; the ledger update below still records them locally.
-  const queued = await apiRequest(
-    credentials,
-    'POST',
-    `/api/v1/series/${encodeURIComponent(podcast.seriesId)}/episodes`,
-    requestBody,
-    { 'Idempotency-Key': `episode-journal-${slug}-${Date.now()}` },
-  );
+  let queued;
+  try {
+    queued = await apiRequest(
+      credentials,
+      'POST',
+      `/api/v1/series/${encodeURIComponent(podcast.seriesId)}/episodes`,
+      requestBody,
+      { 'Idempotency-Key': `episode-journal-${slug}-${Date.now()}` },
+    );
+  } catch (error) {
+    // 'public' requires the publish:write scope. When public was only the
+    // series-derived DEFAULT (not an explicit --visibility flag or
+    // podcast.json setting), a key without that scope must not brick
+    // scheduled runs — fall back to private and say so. Explicit choices
+    // still fail loudly.
+    const scopeDenied = error?.status === 403
+      && resolvedVisibility.visibility === 'public'
+      && resolvedVisibility.source === 'series-default';
+    if (!scopeDenied) throw error;
+    process.stderr.write('[newstune] 金鑰缺 publish:write scope，公開系列的預設 public 已降級為 private 重試。'
+      + `之後可換用含 publish:write 的金鑰並執行 publish --project ${slug} --episode <n> 補發佈。\n`);
+    resolvedVisibility.visibility = 'private';
+    resolvedVisibility.source = 'scope-fallback';
+    queued = await apiRequest(
+      credentials,
+      'POST',
+      `/api/v1/series/${encodeURIComponent(podcast.seriesId)}/episodes`,
+      { ...requestBody, visibility: 'private' },
+      { 'Idempotency-Key': `episode-journal-${slug}-${Date.now()}` },
+    );
+  }
   if (!queued?.jobId) {
     const error = new Error('後端未回傳 jobId，無法追蹤集數生成。');
     error.body = queued;
@@ -607,6 +688,11 @@ async function runSubmit(args) {
   const episodeNumber = Number.isFinite(Number(episodeNumberRaw)) && episodeNumberRaw !== null && episodeNumberRaw !== undefined
     ? Number(episodeNumberRaw)
     : null;
+  const publicSlug = asString(queued.publicSlug || job?.result?.publicSlug || job?.result?.episode?.publicSlug) || null;
+  if (resolvedVisibility.visibility === 'public' && !publicSlug) {
+    process.stderr.write('[newstune] 後端尚未回傳本集 publicSlug（公開系列會在 audio_ready 後自動配發）。'
+      + `之後可執行：node ${scriptPath} publish --project ${slug} --episode ${episodeNumber ?? '<n>'} 取得公開連結。\n`);
+  }
   const nowIso = new Date().toISOString();
 
   const ledgerPath = path.join(projectDir, 'ledger.json');
@@ -620,6 +706,8 @@ async function runSubmit(args) {
     topics,
     jobId: String(queued.jobId),
     createdAt: nowIso,
+    visibility: resolvedVisibility.visibility,
+    ...(publicSlug ? { publicSlug } : {}),
   });
   ledger.lastCoveredAt = nowIso;
   writeJsonFile(ledgerPath, ledger);
@@ -648,9 +736,106 @@ async function runSubmit(args) {
     title,
     summary,
     topics,
+    visibility: resolvedVisibility.visibility,
+    visibilitySource: resolvedVisibility.source,
+    publicSlug,
+    publicUrl: resolvedVisibility.visibility === 'public'
+      ? buildEpisodePublicUrl(podcast.seriesSnapshot?.language, publicSlug)
+      : null,
     lastCoveredAt: nowIso,
     ledgerPath,
     entryPath,
+  }, null, 2)}\n`);
+}
+
+async function runPublish(args) {
+  const { slug, projectDir } = resolveProjectDir(args.project);
+  const credentials = requireCredentials();
+  const { podcast } = loadPodcastConfig(projectDir, slug);
+
+  const episodeRaw = args.episode;
+  const episodeNumber = Number(episodeRaw === true ? NaN : episodeRaw);
+  if (!Number.isInteger(episodeNumber) || episodeNumber <= 0) {
+    throw new Error('--episode 為必填，且必須是正整數（集數）。');
+  }
+  // parseArgs consumes a following token as the flag's value, so a typo like
+  // `--private true` would otherwise silently PUBLISH. Accept only the bare
+  // flag or an explicit true/false.
+  let visibility = 'public';
+  if (args.private !== undefined) {
+    if (args.private === true || args.private === 'true') visibility = 'private';
+    else if (args.private === 'false') visibility = 'public';
+    else throw new Error('「--private」不接受其他值（直接寫 --private 即可）。');
+  }
+
+  let response;
+  try {
+    response = await apiRequest(
+      credentials,
+      'PATCH',
+      `/api/v1/series/${encodeURIComponent(podcast.seriesId)}/episodes/${episodeNumber}/visibility`,
+      { visibility },
+    );
+  } catch (error) {
+    if (!isEndpointGap(error)) throw error;
+    // Same 404-degradation convention as bind/collect: a 404 means the backend
+    // deploy with this PATCH endpoint has not landed yet — degrade, don't fail.
+    process.stderr.write('[newstune] 後端尚未部署 PATCH /api/v1/series/:id/episodes/:n/visibility（404 或無法連線）。'
+      + '等後端部署後重跑同一指令即可。\n');
+    process.stdout.write(`${JSON.stringify({
+      ok: false,
+      degraded: true,
+      reason: 'ENDPOINT_NOT_DEPLOYED',
+      // After the deploy lands, a 404 here can also mean EPISODE_NOT_FOUND /
+      // SERIES_NOT_FOUND — surface the upstream error code so both stay distinguishable.
+      upstreamError: asString(error?.body?.error) || null,
+      project: slug,
+      seriesId: podcast.seriesId,
+      episodeNumber,
+      requestedVisibility: visibility,
+    }, null, 2)}\n`);
+    return;
+  }
+
+  const episode = response?.episode && typeof response.episode === 'object' ? response.episode : {};
+  const resultVisibility = normalizeVisibility(episode.visibility) || visibility;
+  const publicSlug = asString(episode.publicSlug) || null;
+  const publicUrl = resultVisibility === 'public'
+    ? buildEpisodePublicUrl(podcast.seriesSnapshot?.language, publicSlug)
+    : null;
+  if (resultVisibility === 'public' && !publicSlug) {
+    process.stderr.write('[newstune] 本集已設為 public，但 publicSlug 尚未配發（公開系列會在 audio_ready 後自動配發）。'
+      + '稍後重跑 publish 取得公開連結。\n');
+  }
+
+  // Always sync the ledger — unpublish (visibility=private, slug null) must
+  // also land, otherwise the entry keeps a stale "public" state.
+  {
+    const ledgerPath = path.join(projectDir, 'ledger.json');
+    const ledger = readJsonFile(ledgerPath, null);
+    if (ledger && Array.isArray(ledger.episodes)) {
+      let updated = false;
+      for (const entry of ledger.episodes) {
+        if (Number(entry?.episodeNumber) === episodeNumber) {
+          entry.visibility = resultVisibility;
+          if (publicSlug) entry.publicSlug = publicSlug;
+          else if (resultVisibility === 'private') delete entry.publicSlug;
+          updated = true;
+        }
+      }
+      if (updated) writeJsonFile(ledgerPath, ledger);
+    }
+  }
+
+  process.stdout.write(`${JSON.stringify({
+    ok: true,
+    project: slug,
+    seriesId: podcast.seriesId,
+    episodeNumber: Number.isFinite(Number(episode.episodeNumber)) ? Number(episode.episodeNumber) : episodeNumber,
+    visibility: resultVisibility,
+    publicSlug,
+    publicUrl,
+    status: asString(episode.status) || null,
   }, null, 2)}\n`);
 }
 
@@ -684,6 +869,7 @@ async function main() {
   if (command === 'bind') return runBind(args);
   if (command === 'collect') return runCollect(args);
   if (command === 'submit') return runSubmit(args);
+  if (command === 'publish') return runPublish(args);
   if (command === 'status') return runStatus(args);
   usage(1);
 }

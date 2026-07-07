@@ -11,7 +11,7 @@ Three layers plus an episode bridge:
 | Gate | `journal_gate.mjs` | Stop hook (stdin JSON) | No | Deterministic checks under 100ms; spawns the record layer detached when all pass |
 | Record | `journal_record.mjs` | Detached background process | Yes | Judges whether the session is worth recording; writes the entry + `project.md` |
 | Setup | `journal_setup.mjs` | Manual CLI | No | Hook install/uninstall, pause/resume, status, launchd schedule/unschedule |
-| Bridge | `episode_from_journal.mjs` | Manual CLI / scheduled run | No | `bind`/`collect`/`submit`/`status`: journal → NewsTune episode |
+| Bridge | `episode_from_journal.mjs` | Manual CLI / scheduled run | No | `bind`/`collect`/`submit`/`publish`/`status`: journal → NewsTune episode |
 
 The record layer sets `NEWSTUNE_JOURNAL_SKIP=1` in the engine environment, and scheduled launchd runs carry the same variable, so a recording or scheduled session can never trigger another recording (recursion guard).
 
@@ -151,25 +151,30 @@ Codex (`~/.codex/hooks.json`, flat entries; `config.toml`'s `notify` is delibera
 ```json
 {
   "seriesId": "srs_...",
-  "seriesSnapshot": { "title": "...", "topic": "...", "language": "zh-TW", "hostIds": ["..."], "episodeFormat": "brief", "targetDurationMinutes": 10 },
+  "seriesSnapshot": { "title": "...", "topic": "...", "language": "zh-TW", "hostIds": ["..."], "episodeFormat": "brief", "visibility": "public", "targetDurationMinutes": 10 },
   "cadence": "weekly",
   "mode": "script_to_audio",
   "materialConsent": false,
   "extraSources": [],
-  "lastCoveredAt": null
+  "lastCoveredAt": null,
+  "episodeVisibility": "public"
 }
 ```
+
+`seriesSnapshot.visibility` is persisted by `bind` (from `GET /api/v1/series/:id` or `--snapshot-json`). `episodeVisibility` is optional (`"public"` | `"private"`); when absent, `submit` falls back to the series default — **a public series airs its episodes by default** (`public`), any other series defaults to `private`. Full resolution order used by `submit`: `--visibility` flag → `episodeVisibility` → series default. `bind` prints the resolved default so the user knows what future submits will do.
 
 `ledger.json` (appended by `submit` after the job reaches a terminal state):
 
 ```json
 {
   "episodes": [
-    { "episodeNumber": 3, "title": "...", "summary": "...", "highlights": ["..."], "topics": ["..."], "jobId": "...", "createdAt": "2026-07-06T..." }
+    { "episodeNumber": 3, "title": "...", "summary": "...", "highlights": ["..."], "topics": ["..."], "jobId": "...", "createdAt": "2026-07-06T...", "visibility": "public", "publicSlug": "my-episode-slug" }
   ],
   "lastCoveredAt": "2026-07-06T..."
 }
 ```
+
+`visibility` records what `submit` sent; `publicSlug` is present only once known — `submit` stores it when the create/job result carries one, and `publish` backfills it (the backend allocates public-series episode slugs after `audio_ready`).
 
 `collect` selects entries dated after `lastCoveredAt` (ledger first, then podcast.json), orders `decision`/`pivot`/`milestone` first, adds a git digest (`--cwd` points at the code repo; non-git directories are tolerated), and prefers `GET /api/v1/series/{seriesId}/episodes` for `priorEpisodes` with a `ledger.json` fallback on 404. It performs no LLM calls — the invoking agent writes the script.
 
@@ -231,4 +236,4 @@ Common situations:
 - **Remove completely**: `journal_setup.mjs uninstall` (removes only our hook entries, keeps `config.json` and all journal data), plus `unschedule --project <slug>` per scheduled project. Restore any hook file from `<file>.bak-newstune` if needed.
 - **Engine failures**: the record layer never crashes the CLI; look for `[record] error` lines (unparseable engine output, timeouts, missing binary). Verify the engine works headless: `claude -p 'hi'` or `codex exec --skip-git-repo-check -s read-only 'hi'`.
 - **Scheduled run did nothing**: check `logs/schedule.<slug>.log` / `.err.log`, then `launchctl print gui/$(id -u)/com.newstune.podcast.<slug>`. A skipped issue for lack of material is expected behavior, not a failure.
-- **Read endpoints return 404**: the backend deploy has not landed; `bind`/`collect` degrade to `podcast.json`/`ledger.json` automatically with a one-line stderr notice (see `references/api-v1.md`).
+- **Read endpoints return 404**: the backend deploy has not landed; `bind`/`collect` degrade to `podcast.json`/`ledger.json` automatically with a one-line stderr notice (see `references/api-v1.md`). `publish` degrades the same way when the visibility PATCH endpoint returns 404 (`{ "ok": false, "degraded": true, "reason": "ENDPOINT_NOT_DEPLOYED" }`); rerun after the deploy lands.

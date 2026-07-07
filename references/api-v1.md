@@ -544,7 +544,43 @@ The response queues a job:
 }
 ```
 
-For public episodes, include `visibility: "public"` and make sure the API key has `publish:write`.
+### Episode visibility on create
+
+`POST /api/v1/series/{seriesId}/episodes` accepts an optional `visibility` field (`"public"` | `"private"`, both modes):
+
+- Omitted → `script_to_audio` persists `private` explicitly. `material_to_podcast` leaves the field **unset**, which the backend treats as public-eligible: the episode stays hidden for now, but the next series-visibility toggle (or an owner saving the series in the app) backfills a `publicSlug` and publishes it. If an episode must stay hidden, send `"private"` explicitly.
+- `"public"` → requires `publish:write` on the API key. **Auto-slug applies to `script_to_audio` only**: in a public series that mode allocates the episode's `publicSlug` when the render finishes (the create response may not carry it yet). `material_to_podcast` never auto-allocates — after the job completes, call the visibility PATCH below once (idempotent) to allocate the slug and make the episode actually visible.
+- A public episode inside a private series stays unreachable until the series itself is published.
+
+`scripts/episode_from_journal.mjs submit` resolves the value it sends as: `--visibility` flag → `podcast.json` `episodeVisibility` → series default (`public` when the bound series is public, else `private`).
+
+### Change episode visibility
+
+Retroactively publish or unpublish a single episode (`publish:write`):
+
+```http
+PATCH /api/v1/series/{seriesId}/episodes/{episodeNumber}/visibility
+
+{
+  "visibility": "public"
+}
+```
+
+```json
+{
+  "ok": true,
+  "episode": {
+    "episodeNumber": 3,
+    "visibility": "public",
+    "publicSlug": "my-episode-slug",
+    "status": "ready"
+  }
+}
+```
+
+`publicSlug` is `null` when the episode is not yet `audio_ready` (the PATCH persists visibility, but slugs are only allocated for ready episodes). In that case re-run the same PATCH once the episode is ready — it is idempotent and will allocate the slug then. This endpoint is newer than the create endpoint: until the backend deploy lands it returns `404` — treat that as "not yet deployed" (same degradation convention as the read endpoints above), print a stderr note, and retry after deploy. `scripts/episode_from_journal.mjs publish` implements exactly this.
+
+The public episode page URL is `https://podcast.newstune.app` + (`/zh-tw` when the series language is `zh`, `zh-TW`, or `zh-Hant*`; empty otherwise, including `zh-Hans`/`zh-CN`) + `/episode/{publicSlug}/`.
 
 ## Standalone TTS
 
