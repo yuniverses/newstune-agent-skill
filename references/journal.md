@@ -111,6 +111,10 @@ The gate tolerates both payload shapes; every field is optional with a fallback:
 | `transcriptPath` | `transcript_path` | `transcript_path` / `rollout_path` (also accepts `transcriptPath` / `transcript`) | none — gate skips with a logged reason |
 | `sessionId` | `session_id` | `session_id` / `thread_id` (also accepts `sessionId`) | empty string (informational only) |
 
+### Scheduled-run model & failure notification
+
+Scheduled launchd runs pin `--model` (default `sonnet`; override with `schedule --model <m>` or `scheduleModel` in config.json) so nightly automation neither burns nor gets blocked by the user's default top-tier model limit. The plist wraps the engine in `/bin/sh` so a non-zero exit posts a macOS notification (「NewsTune 排程」) instead of failing silently — the error detail stays in `logs/schedule.<slug>.err.log`. Note: the launchd context usually lacks macOS TCC permission for `~/Documents`; runs fall back to `gh` remote data for repo digests, so only pushed commits are visible to scheduled episodes unless the engine binary's app is granted Files-and-Folders access.
+
 ## Hook Installation
 
 `journal_setup.mjs install` merges into both targets (select with `--targets claude,codex`, default both). Entries are identified by the absolute path of `journal_gate.mjs` inside the `command` string, which makes install idempotent and uninstall shape-safe. Every modified file is backed up to `<file>.bak-newstune` first.

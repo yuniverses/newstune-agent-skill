@@ -52,7 +52,7 @@ function usage(exitCode = 0) {
   node scripts/journal_setup.mjs pause
   node scripts/journal_setup.mjs resume
   node scripts/journal_setup.mjs status
-  node scripts/journal_setup.mjs schedule --project <slug> [--cadence weekly|daily] [--day sun] [--time 09:00] [--engine claude|codex] [--no-load]
+  node scripts/journal_setup.mjs schedule --project <slug> [--cadence weekly|daily] [--day sun] [--time 09:00] [--engine claude|codex] [--model sonnet] [--no-load]
   node scripts/journal_setup.mjs unschedule --project <slug> [--no-load]
   node scripts/journal_setup.mjs onboarding status      # 本機是否已完成首次介紹（含機器指紋比對）
   node scripts/journal_setup.mjs onboarding complete    # 標記本機已完成首次介紹
@@ -401,13 +401,26 @@ function resolveBinary(name) {
   return resolved || name;
 }
 
-function buildScheduleProgramArguments(engine, slug) {
+// Scheduled runs pin an explicit model (default 'sonnet'): without --model,
+// claude -p uses the user's default model — often a top-tier one whose usage
+// limit the nightly automation then silently burns through (observed: a 09:00
+// run died with "You've reached your Fable 5 limit", exit 1, no episode).
+const DEFAULT_SCHEDULE_MODEL = 'sonnet';
+
+function buildScheduleProgramArguments(engine, slug, scheduleModel) {
   // zh-TW prompt: this is what the headless engine receives on each scheduled run.
   const prompt = `使用 newstune-agent-api skill，為專案「${slug}」執行排程集數流程：先用 scripts/episode_from_journal.mjs collect 收集素材，依 Continuity Contract 撰寫本集腳本，再用 submit 送出生成並輪詢到完成。排程模式規則：不要詢問使用者任何問題；若素材不足（自上期以來沒有值得成集的 entries 或 commits），跳過本期並將原因記錄到日誌。`;
-  if (engine === 'codex') {
-    return [resolveBinary('codex'), 'exec', '--skip-git-repo-check', '--full-auto', prompt];
-  }
-  return [resolveBinary('claude'), '-p', prompt, '--dangerously-skip-permissions'];
+  const engineArgs = engine === 'codex'
+    ? [resolveBinary('codex'), 'exec', '--skip-git-repo-check', '--full-auto', prompt]
+    : [resolveBinary('claude'), '-p', prompt, '--model', scheduleModel || DEFAULT_SCHEDULE_MODEL, '--dangerously-skip-permissions'];
+  // Wrap in sh so a failing run surfaces as a macOS notification instead of
+  // dying silently in the log (the user only notices when an episode never
+  // appears). Engine args are passed positionally — nothing is interpolated
+  // into the shell script, so prompt/slug content can't inject.
+  const notifyScript = 'rc=0; "$@" || rc=$?; '
+    + `if [ "$rc" -ne 0 ]; then /usr/bin/osascript -e "display notification \\"排程集數生成失敗（exit $rc）— 詳見 schedule.${slug}.err.log\\" with title \\"NewsTune 排程\\"" || true; fi; `
+    + 'exit "$rc"';
+  return ['/bin/sh', '-c', notifyScript, 'newstune-schedule', ...engineArgs];
 }
 
 function buildPlist({ label, programArguments, calendar, environment, workingDirectory, stdoutPath, stderrPath }) {
@@ -468,6 +481,7 @@ function scheduleCommand(args) {
   const engineArg = args.engine ? String(args.engine) : '';
   if (engineArg && engineArg !== 'claude' && engineArg !== 'codex') fail('--engine 只接受 claude 或 codex');
   const engine = engineArg || (config.engine === 'codex' ? 'codex' : 'claude');
+  const scheduleModel = String(args.model || config.scheduleModel || DEFAULT_SCHEDULE_MODEL);
 
   const journalRoot = process.env.NEWSTUNE_JOURNAL_ROOT || String(config.journalRoot || '');
   const workingDirectory = journalRoot ? path.join(journalRoot, slug) : os.homedir();
@@ -489,7 +503,7 @@ function scheduleCommand(args) {
   const plistPath = path.join(launchAgentsDir, `${label}.plist`);
   const plist = buildPlist({
     label,
-    programArguments: buildScheduleProgramArguments(engine, slug),
+    programArguments: buildScheduleProgramArguments(engine, slug, scheduleModel),
     calendar,
     environment,
     workingDirectory,
