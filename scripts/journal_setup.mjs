@@ -52,7 +52,7 @@ function usage(exitCode = 0) {
   node scripts/journal_setup.mjs pause
   node scripts/journal_setup.mjs resume
   node scripts/journal_setup.mjs status
-  node scripts/journal_setup.mjs schedule --project <slug> [--cadence weekly|daily] [--day sun] [--time 09:00] [--engine claude|codex] [--model sonnet] [--no-load]
+  node scripts/journal_setup.mjs schedule --project <slug> [--cadence weekly|daily] [--day sun] [--time 09:00] [--engine claude|codex] [--model opus] [--no-load]
   node scripts/journal_setup.mjs unschedule --project <slug> [--no-load]
   node scripts/journal_setup.mjs onboarding status      # 本機是否已完成首次介紹（含機器指紋比對）
   node scripts/journal_setup.mjs onboarding complete    # 標記本機已完成首次介紹
@@ -405,7 +405,7 @@ function resolveBinary(name) {
 // claude -p uses the user's default model — often a top-tier one whose usage
 // limit the nightly automation then silently burns through (observed: a 09:00
 // run died with "You've reached your Fable 5 limit", exit 1, no episode).
-const DEFAULT_SCHEDULE_MODEL = 'sonnet';
+const DEFAULT_SCHEDULE_MODEL = 'opus';
 
 function buildScheduleProgramArguments(engine, slug, scheduleModel) {
   // zh-TW prompt: this is what the headless engine receives on each scheduled run.

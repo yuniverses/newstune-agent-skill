@@ -113,7 +113,7 @@ The gate tolerates both payload shapes; every field is optional with a fallback:
 
 ### Scheduled-run model & failure notification
 
-Scheduled launchd runs pin `--model` (default `sonnet`; override with `schedule --model <m>` or `scheduleModel` in config.json) so nightly automation neither burns nor gets blocked by the user's default top-tier model limit. The plist wraps the engine in `/bin/sh` so a non-zero exit posts a macOS notification (「NewsTune 排程」) instead of failing silently — the error detail stays in `logs/schedule.<slug>.err.log`. Note: the launchd context usually lacks macOS TCC permission for `~/Documents`; runs fall back to `gh` remote data for repo digests, so only pushed commits are visible to scheduled episodes unless the engine binary's app is granted Files-and-Folders access.
+Scheduled launchd runs pin `--model` (default `opus`; override with `schedule --model <m>` or `scheduleModel` in config.json) so nightly automation neither burns nor gets blocked by the user's default top-tier model limit. The plist wraps the engine in `/bin/sh` so a non-zero exit posts a macOS notification (「NewsTune 排程」) instead of failing silently — the error detail stays in `logs/schedule.<slug>.err.log`. Note: the launchd context usually lacks macOS TCC permission for `~/Documents`; runs fall back to `gh` remote data for repo digests, so only pushed commits are visible to scheduled episodes unless the engine binary's app is granted Files-and-Folders access.
 
 ## Hook Installation
 
