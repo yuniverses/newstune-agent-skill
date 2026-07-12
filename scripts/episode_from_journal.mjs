@@ -396,6 +396,78 @@ function buildSeriesSnapshot(series) {
   return snapshot;
 }
 
+export function extractScriptSpeakerNames(script) {
+  const names = [];
+  const seen = new Set();
+  for (const line of String(script || '').split(/\n+/)) {
+    const match = line.trim().match(/^([^:：]{1,50})[:：]\s*(.+)$/u);
+    if (!match) continue;
+    const name = match[1].trim();
+    const normalized = name.toLocaleLowerCase();
+    if (!name || seen.has(normalized)) continue;
+    seen.add(normalized);
+    names.push(name);
+  }
+  return names;
+}
+
+export function validateScriptSpeakers(script, hosts) {
+  const availableHosts = Array.isArray(hosts) ? hosts : [];
+  const expectedSpeakers = availableHosts
+    .map((host) => asString(host?.name))
+    .filter(Boolean);
+  const expectedByName = new Map(
+    expectedSpeakers.map((name) => [name.toLocaleLowerCase(), name]),
+  );
+  const scriptSpeakers = extractScriptSpeakerNames(script);
+  const unknownSpeakers = scriptSpeakers.filter(
+    (name) => !expectedByName.has(name.toLocaleLowerCase()),
+  );
+  if (unknownSpeakers.length) {
+    throw new Error(
+      `腳本主持人與系列設定不一致：找不到 ${unknownSpeakers.join('、')}；`
+      + `本系列目前只能使用 ${expectedSpeakers.join('、')}。請先修正所有「主持人名稱:」標籤再提交。`,
+    );
+  }
+  return { expectedSpeakers, scriptSpeakers };
+}
+
+async function resolveLiveSeriesHosts(credentials, podcast) {
+  let series = null;
+  try {
+    const data = await apiRequest(
+      credentials,
+      'GET',
+      `/api/v1/series/${encodeURIComponent(podcast.seriesId)}`,
+    );
+    series = data?.series || null;
+  } catch (error) {
+    if (!isEndpointGap(error)) throw error;
+    process.stderr.write('[newstune] 無法讀取 live series，改用 podcast.json 的 seriesSnapshot 驗證主持人。\n');
+    series = podcast.seriesSnapshot || null;
+  }
+
+  const hostIds = asStringArray(series?.hostIds);
+  if (!hostIds.length) {
+    throw new Error('系列沒有可用的 hostIds，為避免使用錯誤聲音，已停止提交。');
+  }
+
+  let hostData;
+  try {
+    hostData = await apiRequest(credentials, 'GET', '/api/v1/hosts?source=all');
+  } catch (error) {
+    throw new Error(`無法取得 live hosts，為避免使用錯誤聲音，已停止提交：${error?.message || error}`);
+  }
+  const allHosts = Array.isArray(hostData?.hosts) ? hostData.hosts : [];
+  const byId = new Map(allHosts.map((host) => [asString(host?.id || host?._id), host]));
+  const hosts = hostIds.map((id) => byId.get(id)).filter(Boolean);
+  const missingHostIds = hostIds.filter((id) => !byId.has(id));
+  if (missingHostIds.length) {
+    throw new Error(`系列主持人無法解析：${missingHostIds.join('、')}。為避免 fallback 到錯誤聲音，已停止提交。`);
+  }
+  return { series, hostIds, hosts };
+}
+
 function normalizeVisibility(value) {
   const text = asString(value).toLowerCase();
   return VALID_VISIBILITIES.includes(text) ? text : null;
@@ -635,10 +707,21 @@ async function runSubmit(args) {
   const resolvedVisibility = resolveEpisodeVisibility(args, podcast);
   process.stderr.write(`[newstune] 本集 visibility=${resolvedVisibility.visibility}（來源：${resolvedVisibility.source}）。\n`);
 
+  const liveHostConfig = await resolveLiveSeriesHosts(credentials, podcast);
+  const speakerValidation = validateScriptSpeakers(script, liveHostConfig.hosts);
+  process.stderr.write(
+    `[newstune] 主持人驗證通過：hostIds=${liveHostConfig.hostIds.join(',')}；`
+    + `scriptSpeakers=${speakerValidation.scriptSpeakers.join(',') || '(none)'}。\n`,
+  );
+  if (liveHostConfig.series) {
+    podcast.seriesSnapshot = buildSeriesSnapshot(liveHostConfig.series);
+  }
+
   const requestBody = {
     mode: 'script_to_audio',
     title,
     script,
+    hostIds: liveHostConfig.hostIds,
     summary,
     visibility: resolvedVisibility.visibility,
     ...(topics.length ? { topics } : {}),

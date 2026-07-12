@@ -209,12 +209,13 @@ Before writing any `script_to_audio` episode script, always do all three reads:
 
 While writing:
 
+- Resolve every live `hostId` to its current host name and use only those names in `Name: dialogue` speaker labels (matching is case-insensitive). Never copy a retired speaker name from an older episode or local template.
 - Keep the opening and closing rituals consistent with previous episodes.
 - Call back to the previous episode naturally instead of starting cold.
 - Do not re-explain points already covered in prior summaries; build on them.
 - Match the length to `episodeFormat` and `targetDurationMinutes`.
 
-On submit, `--summary` is mandatory: it backfills the server (`summary` on the episode) and the local `ledger.json`, giving future episodes dual-side memory even when one side is unavailable.
+On submit, `--summary` is mandatory: it backfills the server (`summary` on the episode) and the local `ledger.json`, giving future episodes dual-side memory even when one side is unavailable. The submit helper re-reads the live series and host library, rejects unknown speaker labels before any paid API call, and sends the verified `hostIds` with the episode request.
 
 ## Web Handoff Contract
 
