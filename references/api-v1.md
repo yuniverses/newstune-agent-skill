@@ -156,14 +156,18 @@ Response:
     "progress": 100,
     "step": "done",
     "result": {
-      "mergedUrl": "https://...",
-      "mergedAssetId": "asset_..."
+      "seriesId": "series_...",
+      "episodeNumber": 3,
+      "episodeUrl": "https://podcast.newstune.app/beta/#series=series_...&episode=3",
+      "publicEpisodeUrl": "https://podcast.newstune.app/zh-tw/episode/my-episode/"
     }
   }
 }
 ```
 
 Only the same API key that created the job can read it. A different key receives `403 JOB_FORBIDDEN`.
+
+For a succeeded episode job, `episodeUrl` is always the signed-in deep link to that exact episode. `publicEpisodeUrl` is included only when the series and audio-ready episode are public and have a public slug. Poll through completion and return one of these episode-page links to the user; do not treat the initial `202` as completion. Standalone TTS jobs continue to return their audio asset fields such as `mergedUrl` and `mergedAssetId` instead.
 
 ## Web Handoffs
 

@@ -1,4 +1,4 @@
 interface:
   display_name: "NewsTune Agent API"
   short_description: "Use NewsTune's API key based Agent API."
-  default_prompt: "Use $newstune-agent-api to validate my cached or newly provided NewsTune API key, interview me about the podcast/content system I want, confirm sources/hosts/voices/generation mode, then create private content only after confirmation."
+  default_prompt: "Use $newstune-agent-api to validate my NewsTune API key, confirm the podcast setup, create content only after confirmation, wait for episode completion, and give me the direct episode link."
