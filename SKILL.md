@@ -141,6 +141,18 @@ If the manifest contains local folders, private files, PDFs, text files, CLI out
    - `POST /api/v1/tts`: standalone text-to-speech asset rendering.
 10. Never print or persist raw API keys in logs, markdown, issue comments, or generated files. The only approved persistent location is the local private credential cache at `.private/credentials.json` created by `scripts/credentials.mjs`.
 
+## Episode Completion and Link Contract
+
+An accepted `202` response means generation was queued, not completed. After creating an episode:
+
+1. Poll `GET /api/v1/jobs/{jobId}` with the same API key until `job.status` is `succeeded` or `failed`.
+2. For a succeeded episode job, read `job.result.episodeUrl` and the optional `job.result.publicEpisodeUrl`.
+3. Always finish by giving the user one clickable single-episode page link. Prefer `publicEpisodeUrl` when the user requested public publishing or sharing. Otherwise use `episodeUrl`, which opens the exact episode in the signed-in NewsTune app.
+4. Tell the user when a private episode link requires NewsTune sign-in. Never substitute a raw audio/CDN URL for the single-episode page link.
+5. If an older backend response does not include `episodeUrl`, construct the signed-in fallback as `https://podcast.newstune.app/beta/#series=<seriesId>&episode=<episodeNumber>`.
+
+NewsTune also emails the account owner when a newly created episode reaches `audio_ready`, unless the user disabled episode-ready email notifications. Email delivery is a convenience notification; the agent must still return the episode link in chat.
+
 ## Project Journal
 
 The journal subsystem records notable engineering sessions (decisions, pivots, milestones, incidents) into per-project markdown entries, then feeds them into podcast episodes. It has three layers:
@@ -175,7 +187,7 @@ Manual and scheduled generation follow the same flow; only the trigger differs.
      --project <slug> --script-file /path/to/script.txt \
      --title "<episode title>" --summary "<episode summary>" --topics a,b,c
    ```
-   `submit` records the episode in `ledger.json`, advances `lastCoveredAt`, and appends a `type: progress` journal entry.
+   `submit` records the episode in `ledger.json`, advances `lastCoveredAt`, appends a `type: progress` journal entry, and outputs `episodeUrl` plus `publicEpisodeUrl` when the episode is public. Return the appropriate single-episode link to the user after every manual run.
 
 Episode visibility: scheduled/manual episodes submitted into a **public** series default to `public` — a public show's episodes should air by default. Everything else defaults to `private`. Override per run with `--visibility public|private` on `submit`, or persistently by setting `episodeVisibility` in the project's `podcast.json` (flag > `podcast.json` > series default). Publishing an episode retroactively (or unpublishing one) uses:
 

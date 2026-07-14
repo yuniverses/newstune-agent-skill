@@ -432,6 +432,13 @@ function buildEpisodePublicUrl(language, publicSlug) {
   return `${PUBLIC_SITE_BASE_URL}${localePath}/episode/${encodeURIComponent(slug)}/`;
 }
 
+function buildEpisodeAppUrl(seriesId, episodeNumber) {
+  const id = asString(seriesId);
+  const number = Number(episodeNumber);
+  if (!id || !Number.isInteger(number) || number <= 0) return null;
+  return `${PUBLIC_SITE_BASE_URL}/beta/#series=${encodeURIComponent(id)}&episode=${number}`;
+}
+
 function loadSnapshotInput(rawInput) {
   const value = String(rawInput || '').trim();
   let parsed;
@@ -689,7 +696,13 @@ async function runSubmit(args) {
     ? Number(episodeNumberRaw)
     : null;
   const publicSlug = asString(queued.publicSlug || job?.result?.publicSlug || job?.result?.episode?.publicSlug) || null;
-  if (resolvedVisibility.visibility === 'public' && !publicSlug) {
+  const episodeUrl = asString(job?.result?.episodeUrl)
+    || buildEpisodeAppUrl(podcast.seriesId, episodeNumber);
+  const publicEpisodeUrl = asString(job?.result?.publicEpisodeUrl)
+    || (resolvedVisibility.visibility === 'public'
+      ? buildEpisodePublicUrl(podcast.seriesSnapshot?.language, publicSlug)
+      : null);
+  if (resolvedVisibility.visibility === 'public' && !publicSlug && !publicEpisodeUrl) {
     process.stderr.write('[newstune] 後端尚未回傳本集 publicSlug（公開系列會在 audio_ready 後自動配發）。'
       + `之後可執行：node ${scriptPath} publish --project ${slug} --episode ${episodeNumber ?? '<n>'} 取得公開連結。\n`);
   }
@@ -708,6 +721,8 @@ async function runSubmit(args) {
     createdAt: nowIso,
     visibility: resolvedVisibility.visibility,
     ...(publicSlug ? { publicSlug } : {}),
+    ...(episodeUrl ? { episodeUrl } : {}),
+    ...(publicEpisodeUrl ? { publicEpisodeUrl } : {}),
   });
   ledger.lastCoveredAt = nowIso;
   writeJsonFile(ledgerPath, ledger);
@@ -739,9 +754,9 @@ async function runSubmit(args) {
     visibility: resolvedVisibility.visibility,
     visibilitySource: resolvedVisibility.source,
     publicSlug,
-    publicUrl: resolvedVisibility.visibility === 'public'
-      ? buildEpisodePublicUrl(podcast.seriesSnapshot?.language, publicSlug)
-      : null,
+    episodeUrl,
+    publicEpisodeUrl,
+    publicUrl: publicEpisodeUrl,
     lastCoveredAt: nowIso,
     ledgerPath,
     entryPath,

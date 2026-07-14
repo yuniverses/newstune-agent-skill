@@ -7,7 +7,7 @@
 這是一個 AI agent skill：安裝後，你的 coding agent 就能透過 NewsTune 公開 Agent API 完成三大支柱的工作：
 
 - **聲音與主持人（複製聲音）**——透過瀏覽器 handoff 複製你自己的聲音（麥克風與同意流程留在網頁端）、搜尋與領養社群聲音、試聽任何聲音，並在其上建立有獨立人設的主持人。
-- **系列內容創作**——建立私人或公開 podcast 系列，從 agent 提供的素材（`material_to_podcast`）或本地撰寫的腳本（`script_to_audio`）生成集數、渲染獨立 TTS，需要時再開啟 RSS 發佈。
+- **系列內容創作**——建立私人或公開 podcast 系列，從 agent 提供的素材（`material_to_podcast`）或本地撰寫的腳本（`script_to_audio`）生成集數、渲染獨立 TTS，需要時再開啟 RSS 發佈；完成後直接回傳該集的收聽連結，NewsTune 也會寄送新集數通知信。
 - **專案追蹤與排程**——安裝背景 hook 自動記錄重要的開發 session（決策、轉向、里程碑——記「為什麼」而不只是「做了什麼」），再把日誌手動或按週排程轉成 podcast 集數。
 
 ## 安裝方式
