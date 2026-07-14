@@ -56,7 +56,7 @@ function requireCredentials() {
   if (!credentials.apiKey) {
     throw new Error(`No NewsTune API key is configured. Store one with:
 
-node ${credentialsScriptPath} set --key 'nt_live_...'
+node ${credentialsScriptPath} set
 `);
   }
   return {

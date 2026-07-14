@@ -18,7 +18,7 @@ if (!apiKey) {
 
 Open https://podcast.newstune.app/beta/#api-keys, create an API key, copy the one-time secret, then store it locally:
 
-node ${credentialsScriptPath} set --key 'nt_live_...'
+node ${credentialsScriptPath} set
 `);
   process.exit(2);
 }

@@ -88,7 +88,7 @@ function requireCredentials() {
   if (!apiKey) {
     throw new Error(`尚未設定 NewsTune API key。請先執行：
 
-node ${path.join(path.dirname(scriptPath), 'credentials.mjs')} set --key 'nt_live_...'
+node ${path.join(path.dirname(scriptPath), 'credentials.mjs')} set
 
 （或以環境變數 NEWSTUNE_API_KEY 提供。）`);
   }

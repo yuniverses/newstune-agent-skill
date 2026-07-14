@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const skillDir = path.resolve(path.dirname(scriptPath), '..');
-const defaultCredentialsPath = path.join(skillDir, '.private', 'credentials.json');
+const sharedCredentialsPath = path.join(os.homedir(), '.config', 'newstune', 'credentials.json');
+const legacyCredentialsPath = path.join(skillDir, '.private', 'credentials.json');
 const defaultBaseUrl = 'https://newstune-backend-fe0cc08f4613.herokuapp.com';
 
 export function getCredentialsPath() {
-  return process.env.NEWSTUNE_CREDENTIALS_PATH || defaultCredentialsPath;
+  return process.env.NEWSTUNE_CREDENTIALS_PATH || sharedCredentialsPath;
 }
 
 export function maskApiKey(apiKey) {
@@ -25,23 +27,29 @@ export function normalizeBaseUrl(value) {
 }
 
 export function loadStoredCredentials() {
-  const credentialsPath = getCredentialsPath();
-  try {
-    const parsed = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
-    return {
-      apiKey: String(parsed.apiKey || '').trim(),
-      baseUrl: normalizeBaseUrl(parsed.baseUrl),
-      updatedAt: parsed.updatedAt || null,
-      path: credentialsPath,
-    };
-  } catch {
-    return {
-      apiKey: '',
-      baseUrl: defaultBaseUrl,
-      updatedAt: null,
-      path: credentialsPath,
-    };
+  const configuredPath = getCredentialsPath();
+  const candidates = process.env.NEWSTUNE_CREDENTIALS_PATH
+    ? [configuredPath]
+    : [configuredPath, legacyCredentialsPath];
+  for (const credentialsPath of candidates) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
+      return {
+        apiKey: String(parsed.apiKey || '').trim(),
+        baseUrl: normalizeBaseUrl(parsed.baseUrl),
+        updatedAt: parsed.updatedAt || null,
+        path: credentialsPath,
+        legacy: credentialsPath === legacyCredentialsPath,
+      };
+    } catch {}
   }
+  return {
+    apiKey: '',
+    baseUrl: defaultBaseUrl,
+    updatedAt: null,
+    path: configuredPath,
+    legacy: false,
+  };
 }
 
 function ensurePrivateDirectory(credentialsPath) {
@@ -78,6 +86,61 @@ function parseArgs(argv) {
   return result;
 }
 
+async function readHiddenApiKey() {
+  if (!process.stdin.isTTY) {
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(String(chunk));
+    return chunks.join('').trim();
+  }
+  if (typeof process.stdin.setRawMode !== 'function') {
+    throw new Error('Hidden terminal input is unavailable. Set NEWSTUNE_API_KEY locally and rerun this command.');
+  }
+
+  process.stdout.write('Paste the one-time NewsTune API key (input hidden): ');
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    const wasRaw = Boolean(stdin.isRaw);
+    let value = '';
+    let settled = false;
+
+    const cleanup = () => {
+      stdin.off('data', onData);
+      stdin.setRawMode(wasRaw);
+      stdin.pause();
+      process.stdout.write('\n');
+    };
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve(value.trim());
+    };
+    const onData = (chunk) => {
+      for (const character of String(chunk)) {
+        if (character === '\u0003') {
+          finish(new Error('Credential setup cancelled.'));
+          return;
+        }
+        if (character === '\r' || character === '\n') {
+          finish();
+          return;
+        }
+        if (character === '\u007f' || character === '\b') {
+          value = value.slice(0, -1);
+        } else if (character >= ' ') {
+          value += character;
+        }
+      }
+    };
+
+    stdin.setEncoding('utf8');
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on('data', onData);
+  });
+}
+
 function saveCredentials({ apiKey, baseUrl }) {
   const trimmedKey = String(apiKey || '').trim();
   if (!looksLikeNewsTuneApiKey(trimmedKey)) {
@@ -112,13 +175,17 @@ function printStatus(credentials = loadStoredCredentials()) {
 }
 
 function clearCredentials() {
-  const credentialsPath = getCredentialsPath();
-  try {
-    fs.unlinkSync(credentialsPath);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
+  const credentialsPaths = process.env.NEWSTUNE_CREDENTIALS_PATH
+    ? [getCredentialsPath()]
+    : [getCredentialsPath(), legacyCredentialsPath];
+  for (const credentialsPath of credentialsPaths) {
+    try {
+      fs.unlinkSync(credentialsPath);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
   }
-  console.log(JSON.stringify({ cleared: true, path: credentialsPath }, null, 2));
+  console.log(JSON.stringify({ cleared: true, paths: credentialsPaths }, null, 2));
 }
 
 function usage(exitCode = 0) {
@@ -127,10 +194,12 @@ function usage(exitCode = 0) {
 
 Usage:
   node scripts/credentials.mjs status
-  node scripts/credentials.mjs set --key nt_live_... [--base-url https://...]
+  node scripts/credentials.mjs set [--base-url https://...]
   node scripts/credentials.mjs clear
 
-The raw API key is stored only in .private/credentials.json with chmod 0600.
+The raw API key is stored in ~/.config/newstune/credentials.json with chmod 0600.
+The set command asks for the key with hidden terminal input. Do not paste secrets into AI chat.
+For non-interactive local automation, provide NEWSTUNE_API_KEY through the process environment.
 Do not commit that file or paste its contents into generated documents.
 `);
   process.exit(exitCode);
@@ -146,8 +215,9 @@ async function main() {
     return;
   }
   if (command === 'set') {
+    const apiKey = args.key || process.env.NEWSTUNE_API_KEY || await readHiddenApiKey();
     const saved = saveCredentials({
-      apiKey: args.key,
+      apiKey,
       baseUrl: args['base-url'] || process.env.NEWSTUNE_API_BASE_URL || defaultBaseUrl,
     });
     console.log(JSON.stringify({

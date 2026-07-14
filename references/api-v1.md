@@ -50,7 +50,7 @@ Read endpoints require their explicit read scopes. A key that creates and then r
 - Default to private series and private episodes unless the user explicitly asks to publish.
 - Any `visibility: "public"`, `publicSlug`, `seoTitle`, or `seoDescription` requires `publish:write`.
 - RSS requires a public series and the `rss:publish` scope.
-- For a launch or exact publishing change, preview `POST /api/v1/series/{seriesId}/publish-exact` with `dryRun: true`, show the complete public impact, wait for approval, then execute with the returned revision and a stable idempotency key. Use `rssAction: "preserve"` unless the user explicitly asks for `enable` or `disable`.
+- For a launch or exact publishing change, preview `POST /api/v1/series/{seriesId}/publish-exact` with `dryRun: true`, enumerate both immediate and future-public effects (including `futurePublicEpisodesAfterAction`), wait for approval of both, then execute with the returned revision and a stable idempotency key. Use `rssAction: "preserve"` unless the user explicitly asks for `enable` or `disable`.
 - Standalone TTS and script-to-audio only accept voices the caller may access: platform/builtin voices, user-owned voices, adopted external voices, or public/community voices. Arbitrary provider reference IDs are rejected.
 - External voice adoption requires `voiceSourceAcknowledged: true`.
 - Voice cloning requires active user voice consent and an audio upload.
@@ -109,7 +109,7 @@ https://podcast.newstune.app/beta/#api-keys
 The existing-key list shows only a non-secret key identifier. Agents need the one-time `secret` shown immediately after creation. Store that secret in the local skill credential cache instead of source files or markdown:
 
 ```bash
-node scripts/credentials.mjs set --key 'nt_live_...'
+node scripts/credentials.mjs set
 ```
 
 The backend API for the authenticated app is:
@@ -468,7 +468,7 @@ POST /api/v1/series/{seriesId}/publish-exact
 }
 ```
 
-The preview returns a `revision`, `selectedEpisodeNumbers` plus selected episode titles, `additionalExistingPublicEpisodeNumbers`, `publicEpisodeNumbersAfterAction`, `webPublicEpisodeNumbersAfterAction`, `rssEpisodeNumbersAfterAction`, titled `rssEpisodesAfterAction`, final `series.seoTitle`/`series.seoDescription`, and complete current/resulting RSS metadata. If RSS will expose a configured owner contact, only `ownerEmailMasked` is returned and `ownerEmailWillBePublic` is `true`. Show each of these fields before approval.
+The preview returns a `revision`, `selectedEpisodeNumbers` plus selected episode titles, `additionalExistingPublicEpisodeNumbers`, `publicEpisodeNumbersAfterAction`, `webPublicEpisodeNumbersAfterAction`, `rssEpisodeNumbersAfterAction`, titled `rssEpisodesAfterAction`, `futurePublicEpisodeNumbersAfterAction`, titled/status-bearing `futurePublicEpisodesAfterAction`, final `series.seoTitle`/`series.seoDescription`, and complete current/resulting RSS metadata. Future-public entries are still generating and not public-readable yet, but may become public automatically when generation completes. If RSS will expose a configured owner contact, only `ownerEmailMasked` is returned and `ownerEmailWillBePublic` is `true`. Show every field and explicitly obtain approval for both the immediate and future-public effects.
 
 Show that complete preview and wait for explicit approval. Then execute with identical publishing inputs, the preview revision, and a stable idempotency key:
 

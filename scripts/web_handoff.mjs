@@ -127,7 +127,7 @@ async function pollHandoff({ baseUrl, apiKey, handoffId, timeoutMs, intervalMs }
 function loadCredentials(args) {
   const stored = loadStoredCredentials();
   const apiKey = process.env.NEWSTUNE_API_KEY || stored.apiKey;
-  if (!apiKey) throw new Error('No NewsTune API key configured. Run scripts/credentials.mjs set --key nt_live_...');
+  if (!apiKey) throw new Error('No NewsTune API key configured. Run scripts/credentials.mjs set in your local terminal.');
   return {
     apiKey,
     baseUrl: String(args['base-url'] || process.env.NEWSTUNE_API_BASE_URL || stored.baseUrl).replace(/\/$/, ''),

@@ -112,10 +112,11 @@ If the manifest contains local folders, private files, PDFs, text files, CLI out
    ```text
    https://podcast.newstune.app/beta/#api-keys
    ```
-   They should log in, create a key, copy the one-time secret from the popup, and paste it back. Then store it with:
+   They should log in, create a key, copy the one-time secret, and store it from their own local terminal with hidden input:
    ```bash
-   node scripts/credentials.mjs set --key 'nt_live_...'
+   node scripts/credentials.mjs set
    ```
+   Never ask the user to paste the secret into the AI conversation. After the helper confirms it saved `~/.config/newstune/credentials.json`, the user only needs to say that local setup is complete.
    Do not ask for Auth0 JWTs, cookies, browser session tokens, or the non-secret key ID shown in the existing-key list.
 3. Verify access with `GET /api/v1/me`, then check available credits with `GET /api/v1/credits`.
 4. If the user request is not already decision-complete, run the Demand Interview Contract and build a SourceManifest before creating resources.
@@ -139,11 +140,11 @@ If the manifest contains local folders, private files, PDFs, text files, CLI out
    - `material_to_podcast`: NewsTune creates script and audio from agent-provided material.
    - `script_to_audio`: The caller supplies the script/transcript and NewsTune only renders voice/audio into an episode.
    - `POST /api/v1/tts`: standalone text-to-speech asset rendering.
-10. Never print or persist raw API keys in logs, markdown, issue comments, or generated files. The only approved persistent location is the local private credential cache at `.private/credentials.json` created by `scripts/credentials.mjs`.
+10. Never print or persist raw API keys in logs, markdown, issue comments, or generated files. The only approved persistent location is the shared private credential cache at `~/.config/newstune/credentials.json` created by `scripts/credentials.mjs`, or a path explicitly supplied through `NEWSTUNE_CREDENTIALS_PATH`.
 
 ## Exact Publishing Contract
 
-For a public series launch or a multi-episode publishing change, use the two-step `POST /api/v1/series/{seriesId}/publish-exact` flow documented in `references/api-v1.md`. First send `dryRun: true`, then show the selected episodes and titles, already-public episodes that remain public, `webPublicEpisodeNumbersAfterAction`, `rssEpisodeNumbersAfterAction`, titled `rssEpisodesAfterAction`, final public slug, `seoTitle`, `seoDescription`, complete RSS action/metadata, and any masked owner contact whose `ownerEmailWillBePublic` flag is true. Wait for explicit approval. Execute with identical publishing inputs, the returned `revision` as `expectedRevision`, and a caller-chosen stable `Idempotency-Key` reused for retries.
+For a public series launch or a multi-episode publishing change, use the two-step `POST /api/v1/series/{seriesId}/publish-exact` flow documented in `references/api-v1.md`. First send `dryRun: true`, then show the selected episodes and titles, already-public episodes that remain public, `publicEpisodeNumbersAfterAction`, `webPublicEpisodeNumbersAfterAction`, `rssEpisodeNumbersAfterAction`, titled `rssEpisodesAfterAction`, `futurePublicEpisodeNumbersAfterAction`, every titled/status-bearing entry in `futurePublicEpisodesAfterAction`, final public slug, `seoTitle`, `seoDescription`, complete RSS action/metadata, and any masked owner contact whose `ownerEmailWillBePublic` flag is true. Explain that future-public episodes are still generating but may become public automatically when they finish, and obtain explicit approval for both immediate and future effects. Execute with identical publishing inputs, the returned `revision` as `expectedRevision`, and a caller-chosen stable `Idempotency-Key` reused for retries.
 
 Always send one explicit RSS action. Use `rssAction: "preserve"` unless the user specifically asks to enable or disable the feed. Never turn an omitted RSS preference into `disable`. Any stale revision requires a new preview and a new approval. Enabling a NewsTune feed is not the same as submitting it to Spotify, Apple Podcasts, YouTube, or another directory; the account owner must complete each external platform's login, verification, and terms.
 
@@ -340,7 +341,7 @@ Open the authenticated frontend directly to the key management modal:
 https://podcast.newstune.app/beta/#api-keys
 ```
 
-The existing-key list shows only a non-secret key identifier. That identifier is not enough for API calls. The user must copy the one-time secret from the creation popup and paste it to the agent once. Store it locally with `scripts/credentials.mjs set`; future runs should reuse the cached key automatically.
+The existing-key list shows only a non-secret key identifier. That identifier is not enough for API calls. The user must copy the one-time secret from the creation popup and run `scripts/credentials.mjs set` in their own terminal; its input is hidden and the secret must never be pasted into AI chat. Future runs should reuse the shared local cache automatically.
 
 ## Validation Script
 

@@ -45,19 +45,19 @@ git clone https://github.com/yuniverses/newstune-agent-skill ~/.codex/skills/new
 
 - Node.js 18+（scripts 為零依賴 Node ESM，不需 `npm install`）
 - Claude Code 或 Codex CLI
-- NewsTune 帳號與 API key——在 <https://podcast.newstune.app/beta/#api-keys> 登入後建立，複製一次性 secret 交給 agent
+- NewsTune 帳號與 API key——在 <https://podcast.newstune.app/beta/#api-keys> 登入後建立，再由你本人存進本機憑證工具；不要貼進 AI 對話
 
 ## 安全性說明
 
-- API key 只存在本機 `.private/credentials.json`，檔案權限 0600。
-- `.private/` 已列入 `.gitignore`，永遠不會進 git，也不會出現在這個 repo。
+- API key 只存在本機 `~/.config/newstune/credentials.json`，檔案權限 0600。
+- 這個共用憑證檔位於 repo 之外，不會進 git，也能由 Codex 與其他本機 Agent 共用。
 - Scripts 不會在 log、輸出或生成檔案中印出原始 API key（只顯示遮罩後的形式）。
 
 ## 快速開始
 
 ```bash
 # 1. 存入你的 API key（一次性 secret 來自網頁的建立彈窗）
-node scripts/credentials.mjs set --key 'nt_live_...'
+node scripts/credentials.mjs set
 
 # 2. 驗證連線、scopes 與額度
 node scripts/smoke_test.mjs
@@ -75,4 +75,4 @@ node scripts/smoke_test.mjs
 
 **Requirements**: Node.js 18+, Claude Code or Codex CLI, and a NewsTune account with an API key created at <https://podcast.newstune.app/beta/#api-keys>.
 
-**Security**: your API key lives only in the local `.private/credentials.json` (0600, git-ignored) and is never printed or committed.
+**Security**: run `node scripts/credentials.mjs set` in your own terminal and paste the one-time key into its hidden prompt. The key lives only in `~/.config/newstune/credentials.json` (0600, outside the repository) and is never sent through AI chat, printed, or committed.
