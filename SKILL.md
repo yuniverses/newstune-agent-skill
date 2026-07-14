@@ -1,6 +1,6 @@
 ---
 name: newstune-agent-api
-description: "Use when an agent needs to integrate with NewsTune's public Agent API through an API key: validate keys, inspect credits, list/create hosts, list/adopt/clone voices, create podcast series, list series and episodes, queue material-to-podcast or script-to-audio episodes, render standalone TTS, publish series, enable RSS, or troubleshoot NewsTune API access. Also use when the user wants to track project progress with an automatic development journal (自動記錄專案進度、寫工程日誌), turn that journal into podcast episodes about their project, or set up recurring scheduled episode generation such as a weekly show from ongoing work (每週自動生成 podcast、排程集數)."
+description: "Use when an agent needs NewsTune's API-key Agent API to validate access, inspect credits, manage hosts or authorized voices, create or continue podcast series and episodes, render TTS, preview an exact publishing scope, preserve/enable/disable RSS, or troubleshoot access. Also use for automatic project journals, turning development progress into episodes, and recurring scheduled podcast generation."
 ---
 
 # NewsTune Agent API
@@ -22,7 +22,7 @@ NewsTune is not only a one-off audio rendering tool. Treat it as a long-running 
 - Generate an episode from agent-provided material with `material_to_podcast`.
 - Render a locally/agent-written script into an episode with `script_to_audio`.
 - Render standalone voice audio with `POST /api/v1/tts`.
-- Publish a series, configure RSS, and prepare it for distribution only when explicitly requested.
+- Preview and publish an exact episode scope, configure RSS with `rssAction: "preserve" | "enable" | "disable"`, and prepare the feed for distribution only when explicitly requested.
 - Automatically journal a development project's decisions and milestones, then turn that journal into recurring podcast episodes on a schedule (see Project Journal below).
 
 ## First-Run Onboarding
@@ -122,9 +122,9 @@ If the manifest contains local folders, private files, PDFs, text files, CLI out
 5. Discover reusable inputs before creating content:
    - `GET /api/v1/hosts?source=all`
    - `GET /api/v1/voices`
-   - `GET /api/v1/series` and `GET /api/v1/series/{seriesId}` to reuse an existing series instead of creating a duplicate.
+   - Page through `GET /api/v1/series?limit=100&offset=0`, replacing `offset` with every returned `nextOffset` until it is `null`; then use `GET /api/v1/series/{seriesId}` to reuse an existing series instead of creating a duplicate.
    - `GET /api/v1/series/{seriesId}/episodes` and `GET /api/v1/series/{seriesId}/episodes/{episodeNumber}` for prior-episode summaries, scripts, and topics when continuity matters.
-   - These four read endpoints may return 404 until the backend deploy lands. Treat 404 as "not yet deployed": fall back to local snapshots (`podcast.json`, `ledger.json`) and continue instead of failing.
+   - When intentionally supporting an older NewsTune deployment, a route-level 404 may be handled with the local `podcast.json`/`ledger.json` fallback. On the current API, a 404 after successful authentication normally means the requested owned resource does not exist; do not create a duplicate without confirming.
    - Read `references/api-v1.md` before using publishing, RSS, external voices, cloning, or episode generation.
 6. Before creating any podcast series, choose hosts:
    - Prefer hosts returned with `sourceTag: "mine"`.
@@ -140,6 +140,12 @@ If the manifest contains local folders, private files, PDFs, text files, CLI out
    - `script_to_audio`: The caller supplies the script/transcript and NewsTune only renders voice/audio into an episode.
    - `POST /api/v1/tts`: standalone text-to-speech asset rendering.
 10. Never print or persist raw API keys in logs, markdown, issue comments, or generated files. The only approved persistent location is the local private credential cache at `.private/credentials.json` created by `scripts/credentials.mjs`.
+
+## Exact Publishing Contract
+
+For a public series launch or a multi-episode publishing change, use the two-step `POST /api/v1/series/{seriesId}/publish-exact` flow documented in `references/api-v1.md`. First send `dryRun: true`, then show the selected episodes and titles, already-public episodes that remain public, `webPublicEpisodeNumbersAfterAction`, `rssEpisodeNumbersAfterAction`, titled `rssEpisodesAfterAction`, final public slug, `seoTitle`, `seoDescription`, complete RSS action/metadata, and any masked owner contact whose `ownerEmailWillBePublic` flag is true. Wait for explicit approval. Execute with identical publishing inputs, the returned `revision` as `expectedRevision`, and a caller-chosen stable `Idempotency-Key` reused for retries.
+
+Always send one explicit RSS action. Use `rssAction: "preserve"` unless the user specifically asks to enable or disable the feed. Never turn an omitted RSS preference into `disable`. Any stale revision requires a new preview and a new approval. Enabling a NewsTune feed is not the same as submitting it to Spotify, Apple Podcasts, YouTube, or another directory; the account owner must complete each external platform's login, verification, and terms.
 
 ## Project Journal
 
@@ -162,7 +168,7 @@ Manual and scheduled generation follow the same flow; only the trigger differs.
    node scripts/episode_from_journal.mjs bind \
      --project <slug> --series-id <seriesId>
    ```
-   If the backend read endpoints are not deployed yet (404), pass `--snapshot-json` with the `POST /api/v1/series` response.
+   If deliberately connecting to a known older deployment without the read endpoint, pass `--snapshot-json` with the `POST /api/v1/series` response. On the current API, prefer the live series read.
 2. Collect the material pack. This is pure data assembly — no LLM call:
    ```bash
    node scripts/episode_from_journal.mjs collect \
@@ -183,7 +189,7 @@ Episode visibility: scheduled/manual episodes submitted into a **public** series
 node scripts/episode_from_journal.mjs publish --project <slug> --episode <n> [--private]
 ```
 
-`publish` prints the episode's `publicSlug` and full `publicUrl` (`https://podcast.newstune.app` + `/zh-tw` for `zh`/`zh-TW`/`zh-Hant*` series — not `zh-Hans`/`zh-CN` — + `/episode/<publicSlug>/`) and syncs `ledger.json` (unpublish clears the slug). It requires `publish:write`; a 404 means the backend PATCH endpoint is not deployed yet — the script degrades with a stderr note instead of failing.
+`publish` prints the episode's `publicSlug` and full `publicUrl` (`https://podcast.newstune.app` + `/zh-tw` for `zh`/`zh-TW`/`zh-Hant*` series — not `zh-Hans`/`zh-CN` — + `/episode/<publicSlug>/`) and syncs `ledger.json` (unpublish clears the slug). It requires `publish:write`. Its 404 degradation exists only for compatibility with known older deployments; on the current API, first verify the series and episode IDs because 404 normally means the owned resource was not found.
 
 To run this on a schedule (macOS launchd):
 
@@ -203,7 +209,7 @@ Scheduled-mode rules:
 
 Before writing any `script_to_audio` episode script, always do all three reads:
 
-1. `GET /api/v1/series/{seriesId}` — series settings: language, style, perspective, `episodeFormat`, `targetDurationMinutes`, `hostIds`. On 404 (endpoint not deployed), use `seriesSnapshot` from `podcast.json`.
+1. `GET /api/v1/series/{seriesId}` — series settings: language, style, perspective, `episodeFormat`, `targetDurationMinutes`, `hostIds`. Use `seriesSnapshot` from `podcast.json` only as a compatibility fallback for a known older deployment, not as proof that a current-API 404 is a deployment gap.
 2. `GET /api/v1/hosts?source=all` — each host's persona (`style`, `bio`). Keep the hosts' role division, tone, and catchphrases consistent with those personas throughout the script.
 3. `GET /api/v1/series/{seriesId}/episodes` — prior episode summaries. On 404, fall back to the local `ledger.json` (`collect` already does this automatically).
 
@@ -240,9 +246,9 @@ Supported actions:
 - `episode_player`
 - `api_keys`
 
-The helper creates `POST /api/v1/handoffs`, opens the returned `openUrl`, then polls `GET /api/v1/handoffs/{handoffId}` until the web UI completes, cancels, fails, or expires. The URL contains only an opaque handoff ID. It must never contain raw API keys, JWTs, local source content, or private files.
+The helper creates `POST /api/v1/handoffs`, opens the returned `openUrl`, then polls `GET /api/v1/handoffs/{handoffId}` until the web UI completes, cancels, fails, or expires. Creating the handoff or opening its URL proves only that the interactive flow was prepared. Claim completion only from a terminal `completed` response and its returned result; for voice selection or cloning, re-list accessible voices/hosts before using the result, and never infer that a series binding occurred unless NewsTune explicitly reports it. The URL contains only an opaque handoff ID. It must never contain raw API keys, JWTs, local source content, or private files.
 
-Use direct Public API calls instead of handoff only when the user has already confirmed all required fields and no browser interaction is needed. Examples: creating a private series from confirmed host IDs, queuing `script_to_audio`, queuing `material_to_podcast`, polling jobs, or rendering standalone TTS.
+Use direct Public API calls instead of handoff when the user has already confirmed all required fields and no browser interaction is needed. Examples: creating a private series from confirmed host IDs, queuing `script_to_audio`, queuing `material_to_podcast`, polling jobs, rendering standalone TTS, or running the exact publish preview/execute flow. A `series_settings` handoff may open interactive publishing controls, but it is not an exact-publish approval token and must not be described as published until the web result and a fresh series read confirm the change.
 
 ### Guidance deep links (no handoff needed)
 
@@ -296,7 +302,7 @@ Create the series only after that confirmation:
 }
 ```
 
-If the user wants a custom host, use the voice workflow first: list voices, search/adopt a community voice if needed, or clone a consented user sample when `voices:clone` is available. After the voice is selected, create or select a host using that voice, then use that host ID in the series.
+If the user wants a custom host, use the voice workflow first: list voices, search/adopt a community voice if needed, or open the secure cloning handoff for a consented user sample when interactive recording/upload is required. After a handoff completes, re-list accessible voices and hosts; only then create or select a host using a confirmed accessible voice and use that host ID in the series. Never claim that opening a handoff bound a voice to a series.
 
 If NewsTune returns `TTS_VOICE_NOT_BOUND`, stop. Tell the user the series needs host IDs with bound voices, then retry only after the host configuration is fixed.
 

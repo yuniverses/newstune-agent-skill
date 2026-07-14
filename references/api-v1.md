@@ -28,14 +28,14 @@ Never use the API key in a query string.
 | `voices:write` | Adopt an external voice with acknowledgement |
 | `voices:clone` | Clone a user-provided audio sample |
 | `series:read` | `GET /api/v1/series`, `GET /api/v1/series/{seriesId}` |
-| `series:write` | Create series (also grants the `series:read` endpoints) |
+| `series:write` | Create or update series through write endpoints |
 | `episodes:read` | `GET /api/v1/series/{seriesId}/episodes`, `GET /api/v1/series/{seriesId}/episodes/{episodeNumber}` |
-| `episodes:write` | Queue episodes (also grants the `episodes:read` endpoints) |
+| `episodes:write` | Queue or update episodes through write endpoints |
 | `tts:render` | Standalone TTS rendering |
-| `publish:write` | Public visibility, public slugs, SEO public surface |
-| `rss:publish` | Enable or update RSS |
+| `publish:write` | Exact publishing, public visibility, public slugs, SEO public surface |
+| `rss:publish` | Enable, disable, or update RSS metadata |
 
-Read endpoints accept the read scope **or** the corresponding write scope (`series:read || series:write`, `episodes:read || episodes:write`), so keys issued before the read scopes existed keep working. A key with neither scope receives `403 { "error": "SCOPE_REQUIRED", "required": [...] }`, where `required` lists the acceptable (any-of) scopes.
+Read endpoints require their explicit read scopes. A key that creates and then reads or publishes series should normally include both `series:read` and `episodes:read` in addition to the needed write scopes. A missing scope receives `403 { "error": "SCOPE_REQUIRED", "required": [...] }`.
 
 ## Safe Integration Rules
 
@@ -50,6 +50,7 @@ Read endpoints accept the read scope **or** the corresponding write scope (`seri
 - Default to private series and private episodes unless the user explicitly asks to publish.
 - Any `visibility: "public"`, `publicSlug`, `seoTitle`, or `seoDescription` requires `publish:write`.
 - RSS requires a public series and the `rss:publish` scope.
+- For a launch or exact publishing change, preview `POST /api/v1/series/{seriesId}/publish-exact` with `dryRun: true`, show the complete public impact, wait for approval, then execute with the returned revision and a stable idempotency key. Use `rssAction: "preserve"` unless the user explicitly asks for `enable` or `disable`.
 - Standalone TTS and script-to-audio only accept voices the caller may access: platform/builtin voices, user-owned voices, adopted external voices, or public/community voices. Arbitrary provider reference IDs are rejected.
 - External voice adoption requires `voiceSourceAcknowledged: true`.
 - Voice cloning requires active user voice consent and an audio upload.
@@ -243,7 +244,7 @@ node scripts/web_handoff.mjs voice_clone \
   --app-window
 ```
 
-The helper opens the returned `openUrl` and polls until `completed`, `cancelled`, `expired`, or `failed`. It never prints the raw API key.
+The helper opens the returned `openUrl` and polls until `completed`, `cancelled`, `expired`, or `failed`. Creating or opening a handoff is preparation, not completion. Trust only a terminal `completed` response and its result; after voice selection/cloning, re-list accessible voices/hosts before use, and do not infer a series binding unless NewsTune explicitly returns one. A `series_settings` handoff may complete an interactive settings flow, but it is not interchangeable with the revision-bound `/publish-exact` approval. The helper never prints the raw API key.
 
 ## Hosts
 
@@ -307,7 +308,7 @@ Idempotency-Key: voice-use-001
 }
 ```
 
-Clone a voice:
+Clone a voice directly only when active NewsTune consent already exists and the user explicitly supplied a sample they own or are authorized to use. Otherwise open the secure `voice_clone` handoff so microphone/upload and consent remain in NewsTune. Possession of an audio file alone is not permission.
 
 ```bash
 curl -s "$NEWSTUNE_API_BASE_URL/api/v1/voices/clone" \
@@ -318,14 +319,14 @@ curl -s "$NEWSTUNE_API_BASE_URL/api/v1/voices/clone" \
 
 ## Series
 
-### Read endpoints and the 404 deployment gap
+### Series discovery and pagination
 
-The four read endpoints below (`GET /api/v1/series`, series detail, episode list, episode detail) are newer than the write endpoints. Until the backend deploy that includes them lands on production, they return `404`. Treat a `404` from these endpoints as "not yet deployed", not as an error: degrade to local caches (`podcast.json` `seriesSnapshot`, `ledger.json`), print a single stderr notice, and continue. `scripts/episode_from_journal.mjs` already implements this degradation for `bind` and `collect`.
+The current API exposes series list/detail and episode list/detail as explicit read-scope endpoints. When supporting a known older deployment, callers may retain the local `podcast.json`/`ledger.json` fallback. On the current API, do not treat every 404 as a deployment gap or create a replacement series automatically.
 
-List the caller's series (`series:read` or `series:write`):
+List the caller's series (`series:read`):
 
 ```http
-GET /api/v1/series?limit=50
+GET /api/v1/series?limit=100&offset=0
 ```
 
 `limit` defaults to 50, maximum 100. Sorted by `createdAt` descending. Only series owned by the key's user are returned. Missing fields are omitted from each item; dates are ISO strings.
@@ -345,11 +346,14 @@ GET /api/v1/series?limit=50
       "createdAt": "2026-07-06T00:00:00.000Z",
       "updatedAt": "2026-07-06T00:00:00.000Z"
     }
-  ]
+  ],
+  "nextOffset": null
 }
 ```
 
-Read one series (`series:read` or `series:write`):
+`limit` defaults to 50 and is capped at 100. Results are sorted by `createdAt` descending. Keep requesting the returned `nextOffset`; discovery is complete only when it is `null`. Match an explicit ID first and then a normalized title across all pages before creating a new series.
+
+Read one series (`series:read`):
 
 ```http
 GET /api/v1/series/{seriesId}
@@ -414,7 +418,7 @@ Create a public series only when explicitly requested:
 }
 ```
 
-Publish or unpublish an existing series:
+For narrow administration, the visibility endpoint can still publish or unpublish an existing series:
 
 ```http
 PATCH /api/v1/series/{seriesId}/visibility
@@ -431,7 +435,7 @@ PATCH /api/v1/series/{seriesId}/visibility
 }
 ```
 
-Enable RSS after the series is public:
+For narrow administration, RSS settings can still be patched after the series is public:
 
 ```http
 PATCH /api/v1/series/{seriesId}/rss
@@ -445,9 +449,51 @@ PATCH /api/v1/series/{seriesId}/rss
 }
 ```
 
+### Exact two-step publishing (recommended)
+
+Exact publishing requires `series:read`, `episodes:read`, and `publish:write`. Add `rss:publish` whenever `rssAction` is `enable` or `disable`, or when an `rss` metadata object is supplied.
+
+Preview first. `rssAction` must be one of `preserve`, `enable`, or `disable`; use `preserve` when the user did not ask to change the feed:
+
+```http
+POST /api/v1/series/{seriesId}/publish-exact
+
+{
+  "dryRun": true,
+  "episodeNumbers": [1, 2],
+  "publicSlug": "my-series",
+  "seoTitle": "My Series",
+  "seoDescription": "A concise public show description",
+  "rssAction": "preserve"
+}
+```
+
+The preview returns a `revision`, `selectedEpisodeNumbers` plus selected episode titles, `additionalExistingPublicEpisodeNumbers`, `publicEpisodeNumbersAfterAction`, `webPublicEpisodeNumbersAfterAction`, `rssEpisodeNumbersAfterAction`, titled `rssEpisodesAfterAction`, final `series.seoTitle`/`series.seoDescription`, and complete current/resulting RSS metadata. If RSS will expose a configured owner contact, only `ownerEmailMasked` is returned and `ownerEmailWillBePublic` is `true`. Show each of these fields before approval.
+
+Show that complete preview and wait for explicit approval. Then execute with identical publishing inputs, the preview revision, and a stable idempotency key:
+
+```http
+POST /api/v1/series/{seriesId}/publish-exact
+Idempotency-Key: publish-my-series-v1
+
+{
+  "dryRun": false,
+  "expectedRevision": "revision-from-preview",
+  "episodeNumbers": [1, 2],
+  "publicSlug": "my-series",
+  "seoTitle": "My Series",
+  "seoDescription": "A concise public show description",
+  "rssAction": "preserve"
+}
+```
+
+`rssAction` defaults to `preserve` when omitted. To explicitly enable RSS, send `rssAction: "enable"` and optional `rss` fields (`language`, `author`, `ownerEmail`, `explicit`, `category`) in both calls. To explicitly disable it, send `rssAction: "disable"`. A non-preserve action or any supplied RSS metadata requires `rss:publish`; unrelated publishing with `preserve` and no RSS metadata does not.
+
+The revision binds the selected public scope, slug, SEO values, RSS action/metadata, and current content state. A `409 PUBLISH_PREVIEW_STALE` means one of those inputs changed; preview again and obtain a new approval. Never silently retry with a changed scope. Reuse the same stable idempotency key only for retries of the identical approved execution.
+
 ## Episodes
 
-List episodes of an owned series (`episodes:read` or `episodes:write`; 404 means the endpoint is not deployed yet — fall back to `ledger.json`):
+List episodes of an owned series (`episodes:read`):
 
 ```http
 GET /api/v1/series/{seriesId}/episodes?limit=20&order=desc
@@ -474,7 +520,7 @@ GET /api/v1/series/{seriesId}/episodes?limit=20&order=desc
 
 `summary` and `closingCliffhanger` are `null` when the episode does not have them. `hasAudio` is `true` when merged audio exists.
 
-Read one episode including its script (`episodes:read` or `episodes:write`):
+Read one episode including its script (`episodes:read`):
 
 ```http
 GET /api/v1/series/{seriesId}/episodes/{episodeNumber}
@@ -548,8 +594,8 @@ The response queues a job:
 
 `POST /api/v1/series/{seriesId}/episodes` accepts an optional `visibility` field (`"public"` | `"private"`, both modes):
 
-- Omitted → `script_to_audio` persists `private` explicitly. `material_to_podcast` leaves the field **unset**, which the backend treats as public-eligible: the episode stays hidden for now, but the next series-visibility toggle (or an owner saving the series in the app) backfills a `publicSlug` and publishes it. If an episode must stay hidden, send `"private"` explicitly.
-- `"public"` → requires `publish:write` on the API key. **Auto-slug applies to `script_to_audio` only**: in a public series that mode allocates the episode's `publicSlug` when the render finishes (the create response may not carry it yet). `material_to_podcast` never auto-allocates — after the job completes, call the visibility PATCH below once (idempotent) to allocate the slug and make the episode actually visible.
+- Omitted → both `script_to_audio` and `material_to_podcast` persist `private` explicitly. This is the safe default regardless of the series visibility.
+- `"public"` → requires `publish:write` on the API key. **Auto-slug applies to `script_to_audio` only**: in a public series that mode allocates the episode's `publicSlug` when the render finishes (the create response may not carry it yet). `material_to_podcast` persists the requested visibility before generation but does not auto-allocate a slug; after the job completes, use the exact publishing preview/execute flow above (recommended) or call the visibility PATCH below once to allocate the slug.
 - A public episode inside a private series stays unreachable until the series itself is published.
 
 `scripts/episode_from_journal.mjs submit` resolves the value it sends as: `--visibility` flag → `podcast.json` `episodeVisibility` → series default (`public` when the bound series is public, else `private`).
@@ -578,7 +624,7 @@ PATCH /api/v1/series/{seriesId}/episodes/{episodeNumber}/visibility
 }
 ```
 
-`publicSlug` is `null` when the episode is not yet `audio_ready` (the PATCH persists visibility, but slugs are only allocated for ready episodes). In that case re-run the same PATCH once the episode is ready — it is idempotent and will allocate the slug then. This endpoint is newer than the create endpoint: until the backend deploy lands it returns `404` — treat that as "not yet deployed" (same degradation convention as the read endpoints above), print a stderr note, and retry after deploy. `scripts/episode_from_journal.mjs publish` implements exactly this.
+`publicSlug` is `null` when the episode is not yet `audio_ready` (the PATCH persists visibility, but slugs are only allocated for ready episodes). In that case re-run the same PATCH once the episode is ready—it is idempotent and will allocate the slug then. On the current API, a 404 normally means the owned series or episode was not found. `scripts/episode_from_journal.mjs publish` retains an older-deployment degradation path, so verify IDs before interpreting its degraded result.
 
 The public episode page URL is `https://podcast.newstune.app` + (`/zh-tw` when the series language is `zh`, `zh-TW`, or `zh-Hant*`; empty otherwise, including `zh-Hans`/`zh-CN`) + `/episode/{publicSlug}/`.
 

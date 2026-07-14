@@ -6,8 +6,8 @@
 
 這是一個 AI agent skill：安裝後，你的 coding agent 就能透過 NewsTune 公開 Agent API 完成三大支柱的工作：
 
-- **聲音與主持人（複製聲音）**——透過瀏覽器 handoff 複製你自己的聲音（麥克風與同意流程留在網頁端）、搜尋與領養社群聲音、試聽任何聲音，並在其上建立有獨立人設的主持人。
-- **系列內容創作**——建立私人或公開 podcast 系列，從 agent 提供的素材（`material_to_podcast`）或本地撰寫的腳本（`script_to_audio`）生成集數、渲染獨立 TTS，需要時再開啟 RSS 發佈。
+- **聲音與主持人（複製聲音）**——透過安全的瀏覽器 handoff 開啟聲音複製或選擇流程（麥克風、上傳與同意都留在網頁端）、搜尋與領養社群聲音、試聽聲音，並建立有獨立人設的主持人；agent 會以 handoff 最終狀態或重新查詢結果確認完成，不把「已開啟連結」誤當成已綁定。
+- **系列內容創作**——先分頁找出並續作既有系列，必要時才建立新的私人 podcast；從 agent 提供的素材（`material_to_podcast`）或本地撰寫的腳本（`script_to_audio`）生成集數、渲染獨立 TTS，公開前再預覽精確集數、SEO 與 RSS 影響。未要求變更 RSS 時會保留現況。
 - **專案追蹤與排程**——安裝背景 hook 自動記錄重要的開發 session（決策、轉向、里程碑——記「為什麼」而不只是「做了什麼」），再把日誌手動或按週排程轉成 podcast 集數。
 
 ## 安裝方式
@@ -69,7 +69,7 @@ node scripts/smoke_test.mjs
 
 ## English
 
-**NewsTune Agent Skill** lets Claude Code / Codex operate [NewsTune](https://podcast.newstune.app) directly through its public Agent API, built around three pillars: **voices & hosts** (clone your own voice via browser handoff, adopt community voices, build hosts with personas), **series content creation** (create podcast series, generate episodes from agent material or local scripts, standalone TTS, optional RSS publishing), and **project tracking & scheduling** (background hooks that journal significant coding sessions, then turn the journal into episodes manually or on a weekly schedule).
+**NewsTune Agent Skill** lets Claude Code / Codex operate [NewsTune](https://podcast.newstune.app) directly through its public Agent API, built around three pillars: **voices & hosts** (open secure voice handoffs, verify their final state before claiming completion, adopt community voices, and build hosts with personas), **series content creation** (page through and continue existing series before creating a private one, generate episodes from agent material or local scripts, render standalone TTS, then preview an exact public/SEO/RSS scope while preserving RSS by default), and **project tracking & scheduling** (background hooks that journal significant coding sessions, then turn the journal into episodes manually or on a weekly schedule).
 
 **Install**: paste the prompt block above to your agent, or clone manually into your harness's skills directory (`~/.claude/skills/newstune-agent-api` for Claude Code, `~/.codex/skills/newstune-agent-api` for Codex).
 
