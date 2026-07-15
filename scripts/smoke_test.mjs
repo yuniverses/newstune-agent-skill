@@ -103,7 +103,12 @@ if (testTtsReject) {
 
 if (testTtsJobPoll) {
   const stamp = Date.now();
-  const voice = (voices.body.voices || []).find((item) => item?.referenceId);
+  // Prefer a platform/community voice for an unattended canary. An adopted
+  // external voice may intentionally require a separate, explicit source
+  // acknowledgement, and a cloned voice may require consent state.
+  const voice = (voices.body.voices || []).find((item) => (
+    item?.referenceId && !['external', 'cloned'].includes(String(item?.source || '').toLowerCase())
+  ));
   const tts = await request('POST', '/api/v1/tts', {
     text: 'NewsTune Agent API smoke test for TTS job polling.',
     voice: voice?.referenceId ? {
