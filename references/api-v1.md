@@ -55,6 +55,7 @@ Read endpoints require their explicit read scopes. A key that creates and then r
 - External voice adoption requires `voiceSourceAcknowledged: true`.
 - Voice cloning requires active user voice consent and an audio upload.
 - Credits are deducted for series creation, script-to-audio, and standalone TTS. Use `GET /api/v1/credits` before generation.
+- On `INSUFFICIENT_CREDITS`, report the current balance and required amount, confirm that no write or debit occurred, and stop. Do not retry, switch accounts, bypass billing, or direct the user to buy credits, upgrade, subscribe, or open a payment link; start any later attempt with a fresh credit check.
 - API-key voice preview must use `GET /api/v1/voices` preview URLs or `POST /api/v1/tts` plus `GET /api/v1/jobs/{jobId}`. Do not use JWT-only `/api/voices/{referenceId}/preview`.
 
 ## Demand Interview and SourceManifest

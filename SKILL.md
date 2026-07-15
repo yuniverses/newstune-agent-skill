@@ -85,6 +85,8 @@ Round 2 should clarify execution details:
 
 Before every `POST /api/v1/hosts`, `POST /api/v1/series`, `POST /api/v1/series/{seriesId}/episodes`, or `POST /api/v1/tts` that spends credits, show a final confirmation summary and wait for approval. Include title/topic, use case, source summary, source privacy policy, host IDs, voice reference IDs, generation mode, visibility/RSS, and known credit implications.
 
+If the API reports insufficient credits, show the current balance and required amount, confirm that no write or debit occurred, and stop. Do not retry, switch accounts, bypass billing, or direct the user to buy credits, upgrade, subscribe, or open a payment link. Begin any later attempt with a fresh credit check and confirmation only after the balance has independently changed.
+
 ## Source Manifest Contract
 
 Represent user-provided sources as a SourceManifest before generation. Use:
