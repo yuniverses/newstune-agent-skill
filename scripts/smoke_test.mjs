@@ -6,7 +6,7 @@ import { loadStoredCredentials, maskApiKey } from './credentials.mjs';
 const credentialsScriptPath = fileURLToPath(new URL('./credentials.mjs', import.meta.url));
 
 const cachedCredentials = loadStoredCredentials();
-const baseUrl = (process.env.NEWSTUNE_API_BASE_URL || cachedCredentials.baseUrl || 'https://newstune-backend-fe0cc08f4613.herokuapp.com').replace(/\/$/, '');
+const baseUrl = (process.env.NEWSTUNE_API_BASE_URL || cachedCredentials.baseUrl || 'https://api.newstune.app').replace(/\/$/, '');
 const apiKey = String(process.env.NEWSTUNE_API_KEY || cachedCredentials.apiKey || '').trim();
 const createSeries = process.env.NEWSTUNE_CREATE_SMOKE_SERIES === 'true';
 const testTtsReject = process.env.NEWSTUNE_TEST_TTS_REJECT === 'true';

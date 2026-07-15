@@ -9,7 +9,7 @@ const scriptPath = fileURLToPath(import.meta.url);
 const skillDir = path.resolve(path.dirname(scriptPath), '..');
 const sharedCredentialsPath = path.join(os.homedir(), '.config', 'newstune', 'credentials.json');
 const legacyCredentialsPath = path.join(skillDir, '.private', 'credentials.json');
-const defaultBaseUrl = 'https://newstune-backend-fe0cc08f4613.herokuapp.com';
+const defaultBaseUrl = 'https://api.newstune.app';
 
 export function getCredentialsPath() {
   return process.env.NEWSTUNE_CREDENTIALS_PATH || sharedCredentialsPath;

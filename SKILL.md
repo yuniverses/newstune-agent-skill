@@ -8,7 +8,7 @@ description: "Use when an agent needs NewsTune's API-key Agent API to validate a
 Use NewsTune's API key API as an external agent, not as a logged-in browser user. The production base URL is:
 
 ```text
-https://newstune-backend-fe0cc08f4613.herokuapp.com
+https://api.newstune.app
 ```
 
 > Script and reference paths in this document (`scripts/foo.mjs`, `references/foo.md`) are relative to this skill's directory. Resolve them against the skill's base directory reported when the skill is invoked.
@@ -360,7 +360,7 @@ NEWSTUNE_API_KEY='nt_live_...' node scripts/smoke_test.mjs
 Optional flags:
 
 ```bash
-NEWSTUNE_API_BASE_URL='https://newstune-backend-fe0cc08f4613.herokuapp.com' \
+NEWSTUNE_API_BASE_URL='https://api.newstune.app' \
 NEWSTUNE_CREATE_SMOKE_SERIES=true \
 NEWSTUNE_TEST_TTS_REJECT=true \
 NEWSTUNE_TEST_TTS_JOB_POLL=true \

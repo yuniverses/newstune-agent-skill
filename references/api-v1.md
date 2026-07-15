@@ -3,7 +3,7 @@
 Base URL:
 
 ```text
-https://newstune-backend-fe0cc08f4613.herokuapp.com
+https://api.newstune.app
 ```
 
 Authentication:
