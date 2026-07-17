@@ -3,7 +3,7 @@
 Base URL:
 
 ```text
-https://newstune-backend-fe0cc08f4613.herokuapp.com
+https://api.newstune.app
 ```
 
 Authentication:
@@ -28,7 +28,7 @@ Never use the API key in a query string.
 | `voices:write` | Adopt an external voice with acknowledgement |
 | `voices:clone` | Clone a user-provided audio sample |
 | `series:read` | `GET /api/v1/series`, `GET /api/v1/series/{seriesId}` |
-| `series:write` | Create or update series through write endpoints |
+| `series:write` | Create series and update persistent `customPrompts` through write endpoints |
 | `episodes:read` | `GET /api/v1/series/{seriesId}/episodes`, `GET /api/v1/series/{seriesId}/episodes/{episodeNumber}` |
 | `episodes:write` | Queue or update episodes through write endpoints |
 | `tts:render` | Standalone TTS rendering |
@@ -44,6 +44,8 @@ Read endpoints require their explicit read scopes. A key that creates and then r
 - Treat user-provided sources as a SourceManifest with source type, priority, trust level, freshness expectation, update mode, citation requirement, allowed transformations, and provenance.
 - Local folders, private files, PDFs, text files, CLI output, and developer logs default to local/agent processing plus `script_to_audio`. Send only summarized material or selected excerpts to `material_to_podcast` after explicit user approval.
 - Before creating a podcast series, list/select hosts and ask the user to confirm the host IDs. Send those IDs as `hostIds` in `POST /api/v1/series`.
+- Before series creation, turn the completed interview into detailed, self-contained `customPrompts` and show every non-empty field in the final confirmation. These fields are the durable production brief for future agents and devices.
+- Before every episode, read `GET /api/v1/series/{seriesId}` and apply all non-empty `customPrompts`. NewsTune applies them internally for `material_to_podcast`; the caller must apply them while drafting a `script_to_audio` transcript.
 - Prefer owned hosts (`sourceTag: "mine"`). Built-in/public hosts can be used when the user approves them.
 - If the user does not choose a host, use defaults by language: `zh-TW` -> `["builtin_zh_kai", "builtin_zh_luna"]`; `en` -> `["builtin_en_marcus", "builtin_en_sarah"]`.
 - Do not queue podcast generation for a series with no usable host voice. `TTS_VOICE_NOT_BOUND` means the series needs hosts with bound voices before retrying.
@@ -52,9 +54,11 @@ Read endpoints require their explicit read scopes. A key that creates and then r
 - RSS requires a public series and the `rss:publish` scope.
 - For a launch or exact publishing change, preview `POST /api/v1/series/{seriesId}/publish-exact` with `dryRun: true`, enumerate both immediate and future-public effects (including `futurePublicEpisodesAfterAction`), wait for approval of both, then execute with the returned revision and a stable idempotency key. Use `rssAction: "preserve"` unless the user explicitly asks for `enable` or `disable`.
 - Standalone TTS and script-to-audio only accept voices the caller may access: platform/builtin voices, user-owned voices, adopted external voices, or public/community voices. Arbitrary provider reference IDs are rejected.
+- A voice already returned as accessible may be previewed or selected even when its display name refers to a celebrity or public figure. Do not block solely from the name or infer endorsement; show a short non-deception/endorsement advisory instead. This selection rule is separate from uploading an audio sample to create a new clone.
 - External voice adoption requires `voiceSourceAcknowledged: true`.
 - Voice cloning requires active user voice consent and an audio upload.
 - Credits are deducted for series creation, script-to-audio, and standalone TTS. Use `GET /api/v1/credits` before generation.
+- On `INSUFFICIENT_CREDITS`, report the current balance and required amount, confirm that no write or debit occurred, and stop. Do not retry, switch accounts, bypass billing, or direct the user to buy credits, upgrade, subscribe, or open a payment link; start any later attempt with a fresh credit check.
 - API-key voice preview must use `GET /api/v1/voices` preview URLs or `POST /api/v1/tts` plus `GET /api/v1/jobs/{jobId}`. Do not use JWT-only `/api/voices/{referenceId}/preview`.
 
 ## Demand Interview and SourceManifest
@@ -375,12 +379,17 @@ GET /api/v1/series/{seriesId}
     "language": "zh-TW",
     "hostIds": ["builtin_zh_kai", "builtin_zh_luna"],
     "visibility": "private",
-    "createdAt": "2026-07-06T00:00:00.000Z"
+    "customPrompts": {
+      "gatherContent": "- Track approved AI product sources weekly.\n- Prefer primary release notes; exclude unsourced reposts.",
+      "generateScript": "- Explain for product managers in zh-TW.\n- Kai frames the facts; Luna challenges assumptions."
+    },
+    "createdAt": "2026-07-06T00:00:00.000Z",
+    "updatedAt": "2026-07-06T00:00:00.000Z"
   }
 }
 ```
 
-Optional fields when present: `publicSlug`, `rss` (summary only: `{ "enabled": true, "url": "/api/series/{seriesId}/rss" }`; `url` is `null` while disabled), `seriesDNA`, `sourcePolicy`. Internal fields such as `customPrompts` are never returned.
+Optional fields when present: `publicSlug`, `rss` (summary only: `{ "enabled": true, "url": "/api/series/{seriesId}/rss" }`; `url` is `null` while disabled), `seriesDNA`, `sourcePolicy`. Because this endpoint is API-key authenticated and owner-only, it returns the persistent `customPrompts`; anonymous public series/episode endpoints still never expose them.
 
 Ownership is enforced without leaking existence: both a nonexistent series and another user's series return `404 SERIES_NOT_FOUND`.
 
@@ -397,12 +406,39 @@ Idempotency-Key: series-create-001
   "hostIds": ["builtin_zh_kai", "builtin_zh_luna"],
   "episodeFormat": "brief",
   "seriesMode": "news",
+  "customPrompts": {
+    "gatherContent": "- Collect official product release notes and the user's approved RSS feeds.\n- Treat specified company blogs as required, independent reporting as background, and exclude anonymous reposts.\n- Use material published since the previous episode and retain source URLs for attribution.",
+    "generatePlan": "- Serve product managers who need a weekly decision briefing.\n- Select 3-5 developments with concrete workflow impact and avoid repeating prior episodes unless facts changed.\n- Open with the highest-impact change, then compare trade-offs and end with next-week watchpoints.",
+    "conductResearch": "- Verify claims against primary documentation and note conflicting dates or metrics.\n- Preserve exact version numbers, release dates, and source provenance.",
+    "generateScript": "- Write in zh-TW for an informed but non-specialist audience.\n- Kai explains evidence; Luna challenges assumptions and asks practical follow-ups.\n- Keep the dialogue concise, define new terms, and avoid unsupported predictions.",
+    "supplementScript": "- Add missing background, transitions, and one concrete example per major item without changing the editorial angle.",
+    "deeperResearch": "- Deepen only disputed or high-impact claims; stop when two reliable sources or one authoritative primary source resolves the question.",
+    "generateFinalScript": "- Recheck names, dates, numbers, attribution, privacy, and host consistency.\n- End with a short actionable recap and clearly labeled uncertainties.",
+    "generateCoverImage": "- Maintain a clean editorial technology identity with charcoal, white, orange, and cyan.\n- Use one inspectable product-related object; avoid logos, portraits, and decorative gradients."
+  },
   "colors": {
     "primary": "#2563eb",
     "accent": "#f97316"
   }
 }
 ```
+
+`customPrompts` accepts only the eight keys shown above. Each value is a string of at most 8,000 characters. Keep the fields detailed enough to stand alone across devices, but store source descriptions and operating rules rather than credentials or raw private documents.
+
+Update selected prompt fields later without spending credits:
+
+```http
+PATCH /api/v1/series/{seriesId}/custom-prompts
+
+{
+  "customPrompts": {
+    "generatePlan": "- Add a recurring listener-question segment.\n- Keep all other established planning rules.",
+    "generateCoverImage": ""
+  }
+}
+```
+
+The patch merges only supplied fields; an empty string clears that field. It requires `series:write`. Show the proposed persistent changes and obtain user confirmation before editing them.
 
 Create a public series only when explicitly requested:
 
@@ -532,6 +568,8 @@ The response adds two fields to the list-item shape:
 
 - `script`: the final episode script, resolved as `finalScriptV2 || supplementedScript || finalScript || null`.
 - `topics`: string array of the episode's topics (from its search plan), `[]` when absent.
+
+Before either generation mode, read the owner-only series detail and all non-empty `customPrompts`, then review recent episode topics when continuity or non-repetition matters. `material_to_podcast` applies the stored prompts inside NewsTune, while `script_to_audio` assumes the caller has already followed them when writing the submitted transcript.
 
 Use `material_to_podcast` when NewsTune should write and produce the episode from supplied material:
 

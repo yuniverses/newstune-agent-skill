@@ -1,6 +1,6 @@
 ---
 name: newstune-agent-api
-description: "Use when an agent needs NewsTune's API-key Agent API to validate access, inspect credits, manage hosts or authorized voices, create or continue podcast series and episodes, render TTS, preview an exact publishing scope, preserve/enable/disable RSS, or troubleshoot access. Also use for automatic project journals, turning development progress into episodes, and recurring scheduled podcast generation."
+description: "Use when an agent needs NewsTune's API-key Agent API to validate access, inspect credits, manage hosts or accessible voices, create or continue podcast series and episodes, render TTS, preview an exact publishing scope, preserve/enable/disable RSS, or troubleshoot access. Also use for automatic project journals, turning development progress into episodes, and recurring scheduled podcast generation."
 ---
 
 # NewsTune Agent API
@@ -8,7 +8,7 @@ description: "Use when an agent needs NewsTune's API-key Agent API to validate a
 Use NewsTune's API key API as an external agent, not as a logged-in browser user. The production base URL is:
 
 ```text
-https://newstune-backend-fe0cc08f4613.herokuapp.com
+https://api.newstune.app
 ```
 
 > Script and reference paths in this document (`scripts/foo.mjs`, `references/foo.md`) are relative to this skill's directory. Resolve them against the skill's base directory reported when the skill is invoked.
@@ -83,7 +83,30 @@ Round 2 should clarify execution details:
   - `tts_render`: render standalone speech only; no full podcast or episode unless explicitly attached later.
 - Visibility and distribution: default private; public, SEO fields, public slugs, and RSS require explicit intent and the relevant scopes.
 
-Before every `POST /api/v1/hosts`, `POST /api/v1/series`, `POST /api/v1/series/{seriesId}/episodes`, or `POST /api/v1/tts` that spends credits, show a final confirmation summary and wait for approval. Include title/topic, use case, source summary, source privacy policy, host IDs, voice reference IDs, generation mode, visibility/RSS, and known credit implications.
+Before every `POST /api/v1/hosts`, `POST /api/v1/series`, `POST /api/v1/series/{seriesId}/episodes`, or `POST /api/v1/tts` that spends credits, show a final confirmation summary and wait for approval. Include title/topic, use case, source summary, source privacy policy, host IDs, voice reference IDs, generation mode, visibility/RSS, every non-empty proposed `customPrompts` field for series creation, and known credit implications.
+
+## Persistent Series Production Brief
+
+Before creating a series, convert every confirmed interview decision into a detailed, self-contained `customPrompts` object. Treat this as the durable operating manual for the series, not a short style label and not temporary conversation memory. Another AI on another device should be able to continue the show consistently after reading the series detail alone.
+
+Use all eight fixed fields:
+
+- `gatherContent`: source acquisition method; named source types; required/preferred/background/excluded sources; language/region; freshness, update cadence, citation requirements, and local/cloud privacy boundaries.
+- `generatePlan`: series mission, audience, use case, episode-selection rules, recurring segments, duration and cadence, novelty, and how to avoid repeating prior episodes.
+- `conductResearch`: questions to answer, evidence and verification standards, primary/authoritative source priority, required documents/data/quotes, conflicting-source handling, and provenance.
+- `generateScript`: language, tone, narrative angle, host roles and interaction, structure, pacing, listener knowledge, required/prohibited content, terminology treatment, and calls to action.
+- `supplementScript`: background, definitions, examples, opposing views, transitions, summaries, and accessibility checks to add without changing the series identity.
+- `deeperResearch`: triggers for deeper research, evidence gaps, timelines, original quotations, causal/impact analysis, and stopping criteria.
+- `generateFinalScript`: non-negotiable final checks for factual consistency, attribution, privacy, length, host consistency, ending style, and release readiness.
+- `generateCoverImage`: durable visual identity, subject matter, composition, colors, text policy, elements to avoid, and episode-to-episode consistency.
+
+Preserve concrete user wording and edge cases when they affect production. Do not reduce requirements to vague phrases such as "professional" or "in depth", and do not invent decisions the user did not make. Do not store passwords, API keys, raw private documents, or unrelated private data; store reusable source descriptions, handling rules, and privacy boundaries instead.
+
+Send the approved object as `customPrompts` in `POST /api/v1/series`. To revise an existing API-created series, show the changed fields and obtain confirmation before `PATCH /api/v1/series/{seriesId}/custom-prompts`; an empty string clears that field.
+
+Before generating every episode, fetch `GET /api/v1/series/{seriesId}` and read every non-empty `customPrompts` field. For `material_to_podcast`, NewsTune's pipeline applies the stored prompts, but the submitted brief and sources must still match them. For `script_to_audio`, the external agent must apply the stored sourcing, planning, research, script, supplement, and final-script rules while writing the final transcript; NewsTune only renders the supplied script. Also read recent episodes when continuity or non-repetition matters. If a new episode request conflicts with the stored brief, ask whether it is a one-episode exception or a permanent series change; never silently overwrite the series instructions.
+
+If the API reports insufficient credits, show the current balance and required amount, confirm that no write or debit occurred, and stop. Do not retry, switch accounts, bypass billing, or direct the user to buy credits, upgrade, subscribe, or open a payment link. Begin any later attempt with a fresh credit check and confirmation only after the balance has independently changed.
 
 ## Source Manifest Contract
 
@@ -123,7 +146,7 @@ If the manifest contains local folders, private files, PDFs, text files, CLI out
 5. Discover reusable inputs before creating content:
    - `GET /api/v1/hosts?source=all`
    - `GET /api/v1/voices`
-   - Page through `GET /api/v1/series?limit=100&offset=0`, replacing `offset` with every returned `nextOffset` until it is `null`; then use `GET /api/v1/series/{seriesId}` to reuse an existing series instead of creating a duplicate.
+   - Page through `GET /api/v1/series?limit=100&offset=0`, replacing `offset` with every returned `nextOffset` until it is `null`; then use `GET /api/v1/series/{seriesId}` to reuse an existing series instead of creating a duplicate and read its persistent `customPrompts` before preparing any episode.
    - `GET /api/v1/series/{seriesId}/episodes` and `GET /api/v1/series/{seriesId}/episodes/{episodeNumber}` for prior-episode summaries, scripts, and topics when continuity matters.
    - When intentionally supporting an older NewsTune deployment, a route-level 404 may be handled with the local `podcast.json`/`ledger.json` fallback. On the current API, a 404 after successful authentication normally means the requested owned resource does not exist; do not create a duplicate without confirming.
    - Read `references/api-v1.md` before using publishing, RSS, external voices, cloning, or episode generation.
@@ -247,6 +270,10 @@ Supported actions:
 - `episode_player`
 - `api_keys`
 
+For `voice_select`, include `selectionCount: 1` for a solo host or `selectionCount: 2` for a two-host format. The NewsTune UI keeps the choices pending until the user confirms the complete set.
+
+An accessible voice returned by NewsTune may be browsed, previewed, and selected even when it is public/community content or its display name refers to a celebrity or public figure. Do not infer missing permission or block selection solely from the identity or name. Give a short reminder that availability does not imply endorsement and that the voice must not be used deceptively or unlawfully. Voice selection is separate from uploading a sample to clone a new voice; cloning still uses NewsTune's recording, rights acknowledgement, and consent flow.
+
 The helper creates `POST /api/v1/handoffs`, opens the returned `openUrl`, then polls `GET /api/v1/handoffs/{handoffId}` until the web UI completes, cancels, fails, or expires. Creating the handoff or opening its URL proves only that the interactive flow was prepared. Claim completion only from a terminal `completed` response and its returned result; for voice selection or cloning, re-list accessible voices/hosts before using the result, and never infer that a series binding occurred unless NewsTune explicitly reports it. The URL contains only an opaque handoff ID. It must never contain raw API keys, JWTs, local source content, or private files.
 
 Use direct Public API calls instead of handoff when the user has already confirmed all required fields and no browser interaction is needed. Examples: creating a private series from confirmed host IDs, queuing `script_to_audio`, queuing `material_to_podcast`, polling jobs, rendering standalone TTS, or running the exact publish preview/execute flow. A `series_settings` handoff may open interactive publishing controls, but it is not an exact-publish approval token and must not be described as published until the web result and a fresh series read confirm the change.
@@ -360,7 +387,7 @@ NEWSTUNE_API_KEY='nt_live_...' node scripts/smoke_test.mjs
 Optional flags:
 
 ```bash
-NEWSTUNE_API_BASE_URL='https://newstune-backend-fe0cc08f4613.herokuapp.com' \
+NEWSTUNE_API_BASE_URL='https://api.newstune.app' \
 NEWSTUNE_CREATE_SMOKE_SERIES=true \
 NEWSTUNE_TEST_TTS_REJECT=true \
 NEWSTUNE_TEST_TTS_JOB_POLL=true \
