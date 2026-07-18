@@ -83,7 +83,36 @@ Round 2 should clarify execution details:
   - `tts_render`: render standalone speech only; no full podcast or episode unless explicitly attached later.
 - Visibility and distribution: default private; public, SEO fields, public slugs, and RSS require explicit intent and the relevant scopes.
 
-Before every `POST /api/v1/hosts`, `POST /api/v1/series`, `POST /api/v1/series/{seriesId}/episodes`, or `POST /api/v1/tts` that spends credits, show a final confirmation summary and wait for approval. Include title/topic, use case, source summary, source privacy policy, host IDs, voice reference IDs, generation mode, visibility/RSS, every non-empty proposed `customPrompts` field for series creation, and known credit implications.
+For interactive/manual work, before every `POST /api/v1/hosts`, `POST /api/v1/series`, `POST /api/v1/series/{seriesId}/episodes`, or `POST /api/v1/tts` that spends credits, show a final confirmation summary and wait for approval. Include title/topic, use case, source summary, source privacy policy, host IDs, voice reference IDs, generation mode, visibility/RSS, every non-empty proposed `customPrompts` field for series creation, and known credit implications.
+
+A user-approved recurring automation is the only confirmation exception. Confirm the complete Recurring Automation Authorization Contract once when creating or materially changing the schedule. Each scheduled occurrence covered by that unchanged contract must run headlessly without asking again: gather the approved sources, generate and upload the episode, poll it to completion, publish it with the approved visibility/RSS behavior, and record the result. The API's quote/preview/token steps may still be required technically; in a covered scheduled run, complete those steps automatically without turning them into a new human approval.
+
+## Recurring Automation Authorization Contract
+
+Prefer the host environment's native recurring automation (for example Codex Schedule) when it is available; otherwise use the user's requested cron-compatible scheduler or the documented launchd fallback. Confirm one self-contained execution contract before activating the timer. It must state:
+
+- target series ID/title, cadence, timezone, generation mode, host IDs, language, expected duration, and per-run credit estimate or maximum;
+- every source location and source type, including exact URLs/RSS/YouTube channels, MCP/Notion/Docs targets, local folders, journal/CLI paths, and web-search topics;
+- required/preferred/background/excluded source policy, freshness window, citation/provenance rules, checkpoint location, and what counts as enough new material;
+- the complete editorial brief: audience, purpose, recurring segments, tone, structure, host interaction, required/prohibited content, and all non-empty series `customPrompts`;
+- local/cloud privacy boundaries and which summarized material may be sent to NewsTune;
+- automatic publication behavior: episode visibility, public-series prerequisite, RSS action (normally `preserve` after one-time setup), and the required final public episode URL;
+- no-interaction behavior, idempotency/checkpoint rules, insufficient-credit handling, retry limit, and conditions that must pause or skip the run.
+
+After approval, put every execution detail into the automation prompt itself; keep cadence and timezone in the native scheduler's schedule fields rather than duplicating them in its task prompt. Do not rely on the setup conversation, because a future scheduled run has no access to that context. Do not include API keys, tokens, cookies, passwords, or raw private documents.
+
+During a covered run, never ask a question or wait for confirmation. Read the live series and all `customPrompts`, collect only new material since the checkpoint, generate one episode, poll to a terminal state, and make it public automatically when the contract says `public`. For `material_to_podcast`, perform the post-generation visibility/publish step required to obtain a public slug. Verify the final public URL and RSS inclusion when RSS is enabled before marking the run successful.
+
+The recurring grant does not authorize creating another series or host, cloning/adopting another voice, changing sources or editorial rules, increasing the approved credit ceiling, enabling/disabling RSS, changing the series slug/SEO, or publishing additional episodes. If a preview or live state would exceed the contract, do not ask during the headless run and do not broaden scope: skip/pause, preserve the checkpoint, log the reason, and surface it to the user. Insufficient credits are also a terminal skip for that occurrence; never retry billing automatically.
+
+For project-journal schedules, generate the exact task prompt before creating a native automation:
+
+```bash
+node scripts/journal_setup.mjs schedule-prompt \
+  --project <slug> --source-cwd <code-repo-path>
+```
+
+Use the returned `prompt` unchanged as the automation task. The native scheduler owns cadence/timezone separately. `journal_setup.mjs schedule` embeds the same prompt in the launchd fallback.
 
 ## Persistent Series Production Brief
 
@@ -167,7 +196,7 @@ If the manifest contains local folders, private files, PDFs, text files, CLI out
 
 ## Exact Publishing Contract
 
-For a public series launch or a multi-episode publishing change, use the two-step `POST /api/v1/series/{seriesId}/publish-exact` flow documented in `references/api-v1.md`. First send `dryRun: true`, then show the selected episodes and titles, already-public episodes that remain public, `publicEpisodeNumbersAfterAction`, `webPublicEpisodeNumbersAfterAction`, `rssEpisodeNumbersAfterAction`, titled `rssEpisodesAfterAction`, `futurePublicEpisodeNumbersAfterAction`, every titled/status-bearing entry in `futurePublicEpisodesAfterAction`, final public slug, `seoTitle`, `seoDescription`, complete RSS action/metadata, and any masked owner contact whose `ownerEmailWillBePublic` flag is true. Explain that future-public episodes are still generating but may become public automatically when they finish, and obtain explicit approval for both immediate and future effects. Execute with identical publishing inputs, the returned `revision` as `expectedRevision`, and a caller-chosen stable `Idempotency-Key` reused for retries.
+For an interactive public series launch or multi-episode publishing change, use the two-step `POST /api/v1/series/{seriesId}/publish-exact` flow documented in `references/api-v1.md`. First send `dryRun: true`, then show the selected episodes and titles, already-public episodes that remain public, `publicEpisodeNumbersAfterAction`, `webPublicEpisodeNumbersAfterAction`, `rssEpisodeNumbersAfterAction`, titled `rssEpisodesAfterAction`, `futurePublicEpisodeNumbersAfterAction`, every titled/status-bearing entry in `futurePublicEpisodesAfterAction`, final public slug, `seoTitle`, `seoDescription`, complete RSS action/metadata, and any masked owner contact whose `ownerEmailWillBePublic` flag is true. Explain that future-public episodes are still generating but may become public automatically when they finish, and obtain explicit approval for both immediate and future effects. Execute with identical publishing inputs, the returned `revision` as `expectedRevision`, and a caller-chosen stable `Idempotency-Key` reused for retries. In an approved recurring run, the automation may preview and execute automatically only when the result is exactly within its stored one-episode publication contract; any broader or changed effect pauses the run.
 
 Always send one explicit RSS action. Use `rssAction: "preserve"` unless the user specifically asks to enable or disable the feed. Never turn an omitted RSS preference into `disable`. Any stale revision requires a new preview and a new approval. Enabling a NewsTune feed is not the same as submitting it to Spotify, Apple Podcasts, YouTube, or another directory; the account owner must complete each external platform's login, verification, and terms.
 
@@ -185,7 +214,7 @@ Read `references/journal.md` for the full specification: data layout, entry fron
 
 ## Scheduled & Manual Episode Generation
 
-Manual and scheduled generation follow the same flow; only the trigger differs.
+Manual and scheduled generation use the same sourcing, continuity, generation, polling, and verification steps. Confirmation differs: manual runs confirm each write, while a scheduled run uses the recurring authorization approved when the schedule was created and must not stop for another question.
 
 1. Bind the journal project to a NewsTune series once:
    ```bash
@@ -207,7 +236,7 @@ Manual and scheduled generation follow the same flow; only the trigger differs.
    ```
    `submit` records the episode in `ledger.json`, advances `lastCoveredAt`, and appends a `type: progress` journal entry.
 
-Episode visibility: scheduled/manual episodes submitted into a **public** series default to `public` — a public show's episodes should air by default. Everything else defaults to `private`. Override per run with `--visibility public|private` on `submit`, or persistently by setting `episodeVisibility` in the project's `podcast.json` (flag > `podcast.json` > series default). Publishing an episode retroactively (or unpublishing one) uses:
+Episode visibility: scheduled/manual episodes submitted into a **public** series default to `public` — a public show's episodes should air by default. Everything else defaults to `private`. Override per run with `--visibility public|private` on `submit`, or persistently by setting `episodeVisibility` in the project's `podcast.json` (flag > `podcast.json` > series default). `submit` derives a stable idempotency key from the project, prior checkpoint, and content unless `--idempotency-key` is supplied, so retrying one occurrence cannot duplicate the episode. A public run never downgrades to private: if `publish:write` is unavailable or no public slug can be verified, it fails before advancing the checkpoint. Publishing an episode retroactively (or unpublishing one) uses:
 
 ```bash
 node scripts/episode_from_journal.mjs publish --project <slug> --episode <n> [--private]
@@ -215,19 +244,32 @@ node scripts/episode_from_journal.mjs publish --project <slug> --episode <n> [--
 
 `publish` prints the episode's `publicSlug` and full `publicUrl` (`https://podcast.newstune.app` + `/zh-tw` for `zh`/`zh-TW`/`zh-Hant*` series — not `zh-Hans`/`zh-CN` — + `/episode/<publicSlug>/`) and syncs `ledger.json` (unpublish clears the slug). It requires `publish:write`. Its 404 degradation exists only for compatibility with known older deployments; on the current API, first verify the series and episode IDs because 404 normally means the owned resource was not found.
 
-To run this on a schedule (macOS launchd):
+For Codex Schedule or another native automation, generate the self-contained task prompt and use its returned `prompt` as the automation task; cadence and timezone belong in the native scheduler fields:
+
+Before generating it, refresh `bind` so `podcast.json` contains the live hosts, visibility, RSS state, style, and `customPrompts`. The journal helper requires `script_to_audio`, non-empty `gatherContent` and `generateScript`, and a public target series when automatic public release is configured.
+
+```bash
+node scripts/journal_setup.mjs schedule-prompt \
+  --project <slug> --source-cwd <code-repo-path> \
+  --max-credits-per-run <approved-limit>
+```
+
+To use the macOS launchd fallback:
 
 ```bash
 node scripts/journal_setup.mjs schedule \
-  --project <slug> --cadence weekly --day sun --time 09:00
+  --project <slug> --source-cwd <code-repo-path> \
+  --max-credits-per-run <approved-limit> \
+  --cadence weekly --day sun --time 09:00
 node scripts/journal_setup.mjs unschedule --project <slug>
 ```
 
 Scheduled-mode rules:
 
-- Never ask the user questions; the run is headless.
+- Never ask the user questions or request per-run credit/publish confirmation; the run is headless and uses the approved schedule contract.
 - If material is insufficient (no worthwhile entries or commits since `lastCoveredAt`), skip this issue and log the reason instead of forcing a thin episode.
 - `extraSources` entries that point at Linear, Notion, or similar systems are fetched through the session's MCP tools; the scripts never fetch them.
+- Submit, poll, and automatically publish according to the approved `episodeVisibility`. For a public contract, verify the public episode URL and RSS inclusion when RSS is enabled before advancing the checkpoint.
 
 ## Continuity Contract
 

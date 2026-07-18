@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { loadStoredCredentials, maskApiKey, normalizeBaseUrl } from './credentials.mjs';
 
@@ -19,6 +20,16 @@ const TYPE_RANK = { decision: 0, pivot: 1, milestone: 2 };
 const DEFAULT_TYPE_RANK = 3;
 const MAX_NOTABLE_SUBJECTS = 10;
 const MAX_PRIOR_EPISODES = 20;
+const SERIES_CUSTOM_PROMPT_KEYS = [
+  'gatherContent',
+  'generatePlan',
+  'conductResearch',
+  'generateScript',
+  'supplementScript',
+  'deeperResearch',
+  'generateFinalScript',
+  'generateCoverImage',
+];
 
 function usage(exitCode = 0) {
   const stream = exitCode === 0 ? process.stdout : process.stderr;
@@ -27,7 +38,7 @@ function usage(exitCode = 0) {
 用法：
   node scripts/episode_from_journal.mjs bind --project <slug> --series-id <id> [--snapshot-json <json|檔案路徑>] [--cadence weekly] [--mode script_to_audio|material_to_podcast]
   node scripts/episode_from_journal.mjs collect --project <slug> [--since <ISO 時間>] [--cwd <專案程式碼目錄>]
-  node scripts/episode_from_journal.mjs submit --project <slug> --script-file <path> --title <標題> --summary <摘要> [--topics a,b,c] [--host-guidance <文字>] [--visibility public|private] [--timeout-ms ${DEFAULT_TIMEOUT_MS}]
+  node scripts/episode_from_journal.mjs submit --project <slug> --script-file <path> --title <標題> --summary <摘要> [--topics a,b,c] [--host-guidance <文字>] [--visibility public|private] [--idempotency-key <stable-key>] [--timeout-ms ${DEFAULT_TIMEOUT_MS}]
   node scripts/episode_from_journal.mjs publish --project <slug> --episode <n> [--private]
   node scripts/episode_from_journal.mjs status --project <slug>
 
@@ -381,7 +392,7 @@ function collectGitDigest(cwd, sinceIso) {
 
 // --- series snapshot helpers ---
 
-function buildSeriesSnapshot(series) {
+export function buildSeriesSnapshot(series) {
   const source = series && typeof series === 'object' ? series : {};
   const snapshot = {
     title: asString(source.title) || null,
@@ -390,7 +401,17 @@ function buildSeriesSnapshot(series) {
     hostIds: asStringArray(source.hostIds),
     episodeFormat: asString(source.episodeFormat) || null,
     visibility: normalizeVisibility(source.visibility),
+    style: asString(source.style) || null,
+    perspective: asString(source.perspective) || null,
+    publicSlug: asString(source.publicSlug) || null,
+    rssEnabled: source.rssEnabled === true,
   };
+  const customPrompts = Object.fromEntries(
+    SERIES_CUSTOM_PROMPT_KEYS
+      .map((key) => [key, asString(source?.customPrompts?.[key])])
+      .filter(([, value]) => value),
+  );
+  if (Object.keys(customPrompts).length) snapshot.customPrompts = customPrompts;
   const duration = Number(source.targetDurationMinutes);
   if (Number.isFinite(duration) && duration > 0) snapshot.targetDurationMinutes = duration;
   return snapshot;
@@ -430,6 +451,20 @@ export function validateScriptSpeakers(script, hosts) {
     );
   }
   return { expectedSpeakers, scriptSpeakers };
+}
+
+export function buildSubmitIdempotencyKey({ slug, checkpoint, title, summary, script }) {
+  const digest = createHash('sha256')
+    .update(JSON.stringify({
+      slug: asString(slug),
+      checkpoint: asString(checkpoint) || 'initial',
+      title: asString(title),
+      summary: asString(summary),
+      script: String(script || ''),
+    }))
+    .digest('hex')
+    .slice(0, 32);
+  return `episode-journal-${asString(slug)}-${digest}`;
 }
 
 async function resolveLiveSeriesHosts(credentials, podcast) {
@@ -717,6 +752,18 @@ async function runSubmit(args) {
     podcast.seriesSnapshot = buildSeriesSnapshot(liveHostConfig.series);
   }
 
+  const ledgerPath = path.join(projectDir, 'ledger.json');
+  const ledger = readJsonFile(ledgerPath, null) || { episodes: [], lastCoveredAt: null };
+  const idempotencyKey = typeof args['idempotency-key'] === 'string' && args['idempotency-key'].trim()
+    ? args['idempotency-key'].trim()
+    : buildSubmitIdempotencyKey({
+      slug,
+      checkpoint: ledger.lastCoveredAt || podcast.lastCoveredAt,
+      title,
+      summary,
+      script,
+    });
+
   const requestBody = {
     mode: 'script_to_audio',
     title,
@@ -729,37 +776,13 @@ async function runSubmit(args) {
   };
   // If the backend has not deployed summary/topics/hostGuidance yet it ignores the
   // unknown fields; the ledger update below still records them locally.
-  let queued;
-  try {
-    queued = await apiRequest(
-      credentials,
-      'POST',
-      `/api/v1/series/${encodeURIComponent(podcast.seriesId)}/episodes`,
-      requestBody,
-      { 'Idempotency-Key': `episode-journal-${slug}-${Date.now()}` },
-    );
-  } catch (error) {
-    // 'public' requires the publish:write scope. When public was only the
-    // series-derived DEFAULT (not an explicit --visibility flag or
-    // podcast.json setting), a key without that scope must not brick
-    // scheduled runs — fall back to private and say so. Explicit choices
-    // still fail loudly.
-    const scopeDenied = error?.status === 403
-      && resolvedVisibility.visibility === 'public'
-      && resolvedVisibility.source === 'series-default';
-    if (!scopeDenied) throw error;
-    process.stderr.write('[newstune] 金鑰缺 publish:write scope，公開系列的預設 public 已降級為 private 重試。'
-      + `之後可換用含 publish:write 的金鑰並執行 publish --project ${slug} --episode <n> 補發佈。\n`);
-    resolvedVisibility.visibility = 'private';
-    resolvedVisibility.source = 'scope-fallback';
-    queued = await apiRequest(
-      credentials,
-      'POST',
-      `/api/v1/series/${encodeURIComponent(podcast.seriesId)}/episodes`,
-      { ...requestBody, visibility: 'private' },
-      { 'Idempotency-Key': `episode-journal-${slug}-${Date.now()}` },
-    );
-  }
+  const queued = await apiRequest(
+    credentials,
+    'POST',
+    `/api/v1/series/${encodeURIComponent(podcast.seriesId)}/episodes`,
+    requestBody,
+    { 'Idempotency-Key': idempotencyKey },
+  );
   if (!queued?.jobId) {
     const error = new Error('後端未回傳 jobId，無法追蹤集數生成。');
     error.body = queued;
@@ -771,15 +794,22 @@ async function runSubmit(args) {
   const episodeNumber = Number.isFinite(Number(episodeNumberRaw)) && episodeNumberRaw !== null && episodeNumberRaw !== undefined
     ? Number(episodeNumberRaw)
     : null;
-  const publicSlug = asString(queued.publicSlug || job?.result?.publicSlug || job?.result?.episode?.publicSlug) || null;
+  let publicSlug = asString(queued.publicSlug || job?.result?.publicSlug || job?.result?.episode?.publicSlug) || null;
   if (resolvedVisibility.visibility === 'public' && !publicSlug) {
-    process.stderr.write('[newstune] 後端尚未回傳本集 publicSlug（公開系列會在 audio_ready 後自動配發）。'
-      + `之後可執行：node ${scriptPath} publish --project ${slug} --episode ${episodeNumber ?? '<n>'} 取得公開連結。\n`);
+    if (!episodeNumber) throw new Error('公開排程已生成音訊但缺少 episodeNumber，無法完成自動發布；checkpoint 未更新。');
+    const published = await apiRequest(
+      credentials,
+      'PATCH',
+      `/api/v1/series/${encodeURIComponent(podcast.seriesId)}/episodes/${episodeNumber}/visibility`,
+      { visibility: 'public' },
+    );
+    publicSlug = asString(published?.episode?.publicSlug || published?.publicSlug) || null;
+    if (!publicSlug) {
+      throw new Error('公開排程已生成音訊但後端未回傳 publicSlug，無法驗證發布；checkpoint 未更新。');
+    }
   }
   const nowIso = new Date().toISOString();
 
-  const ledgerPath = path.join(projectDir, 'ledger.json');
-  const ledger = readJsonFile(ledgerPath, null) || { episodes: [], lastCoveredAt: null };
   if (!Array.isArray(ledger.episodes)) ledger.episodes = [];
   ledger.episodes.push({
     episodeNumber,
@@ -816,6 +846,7 @@ async function runSubmit(args) {
     episodeId: queued.episodeId ?? job?.result?.episodeId ?? null,
     jobId: String(queued.jobId),
     jobStatus: job.status,
+    idempotencyKey,
     title,
     summary,
     topics,

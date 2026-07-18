@@ -8,6 +8,7 @@
 // <file>.bak-newstune first. All filesystem targets are overridable for tests.
 
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,6 +22,7 @@ const gateCommand = `node "${gateScriptPath}"`;
 const CONFIG_DEFAULTS = { cooldownHours: 4, maxPerDay: 3, minTranscriptBytes: 20000 };
 const WEEKDAYS = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
 const PLIST_LABEL_PREFIX = 'com.newstune.podcast.';
+const SENSITIVE_KEY_RE = /(?:api.?key|authorization|cookie|password|secret|token)/i;
 
 function parseArgs(argv) {
   const result = { _: [] };
@@ -52,7 +54,8 @@ function usage(exitCode = 0) {
   node scripts/journal_setup.mjs pause
   node scripts/journal_setup.mjs resume
   node scripts/journal_setup.mjs status
-  node scripts/journal_setup.mjs schedule --project <slug> [--cadence weekly|daily] [--day sun] [--time 09:00] [--engine claude|codex] [--model opus] [--no-load]
+  node scripts/journal_setup.mjs schedule-prompt --project <slug> --source-cwd <path> --max-credits-per-run <n>
+  node scripts/journal_setup.mjs schedule --project <slug> --source-cwd <path> --max-credits-per-run <n> [--cadence weekly|daily] [--day sun] [--time 09:00] [--engine claude|codex] [--model opus] [--no-load]
   node scripts/journal_setup.mjs unschedule --project <slug> [--no-load]
   node scripts/journal_setup.mjs onboarding status      # 本機是否已完成首次介紹（含機器指紋比對）
   node scripts/journal_setup.mjs onboarding complete    # 標記本機已完成首次介紹
@@ -407,9 +410,173 @@ function resolveBinary(name) {
 // run died with "You've reached your Fable 5 limit", exit 1, no episode).
 const DEFAULT_SCHEDULE_MODEL = 'opus';
 
-function buildScheduleProgramArguments(engine, slug, scheduleModel) {
-  // zh-TW prompt: this is what the headless engine receives on each scheduled run.
-  const prompt = `使用 newstune-agent-api skill，為專案「${slug}」執行排程集數流程：先用 scripts/episode_from_journal.mjs collect 收集素材，依 Continuity Contract 撰寫本集腳本，再用 submit 送出生成並輪詢到完成。排程模式規則：不要詢問使用者任何問題；若素材不足（自上期以來沒有值得成集的 entries 或 commits），跳過本期並將原因記錄到日誌。`;
+function sanitizeUrlForPrompt(value) {
+  try {
+    const parsed = new URL(value);
+    parsed.username = '';
+    parsed.password = '';
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      if (SENSITIVE_KEY_RE.test(key)) parsed.searchParams.set(key, '[REDACTED]');
+    }
+    return parsed.toString();
+  } catch {
+    return value;
+  }
+}
+
+function sanitizeScheduleValue(value) {
+  if (Array.isArray(value)) return value.map(sanitizeScheduleValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => !SENSITIVE_KEY_RE.test(key))
+        .map(([key, child]) => [key, sanitizeScheduleValue(child)]),
+    );
+  }
+  if (typeof value !== 'string') return value;
+  return sanitizeUrlForPrompt(value)
+    .replace(/\bnt_(?:live|test)_[A-Za-z0-9_-]+\b/g, '[REDACTED_API_KEY]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*\b/gi, 'Bearer [REDACTED]');
+}
+
+function configuredEpisodeVisibility(podcast) {
+  if (podcast?.episodeVisibility === 'public' || podcast?.episodeVisibility === 'private') {
+    return podcast.episodeVisibility;
+  }
+  return podcast?.seriesSnapshot?.visibility === 'public' ? 'public' : 'private';
+}
+
+function schedulePromptContext(args, slug) {
+  const config = readJsonFile(getConfigPath()) || {};
+  const journalRoot = process.env.NEWSTUNE_JOURNAL_ROOT || String(config.journalRoot || '');
+  if (!journalRoot) fail('找不到 journal root；請先執行 journal_setup.mjs install。');
+  const projectDir = path.resolve(expandHome(path.join(journalRoot, slug)));
+  const podcastPath = path.join(projectDir, 'podcast.json');
+  const podcast = readJsonFile(podcastPath);
+  if (!podcast?.seriesId) {
+    fail(`找不到已綁定的 podcast.json；請先執行 episode_from_journal.mjs bind --project ${slug} --series-id <id>。`);
+  }
+  const series = podcast.seriesSnapshot && typeof podcast.seriesSnapshot === 'object'
+    ? podcast.seriesSnapshot
+    : {};
+  if (!Array.isArray(series.hostIds) || !series.hostIds.length) {
+    fail('排程系列缺少 hostIds；請先完成主持人設定並重新執行 bind。');
+  }
+  if ((podcast.mode || 'script_to_audio') !== 'script_to_audio') {
+    fail('journal schedule helper 目前只支援 script_to_audio；material_to_podcast 請由原生 automation 依完整契約直接呼叫 Agent API。');
+  }
+  const gatherContent = String(series?.customPrompts?.gatherContent || '').trim();
+  const generateScript = String(series?.customPrompts?.generateScript || '').trim();
+  if (!gatherContent || !generateScript) {
+    fail('排程需要 series customPrompts.gatherContent 與 customPrompts.generateScript；請先補齊來源策略/發文風格並重新執行 bind。');
+  }
+  if (configuredEpisodeVisibility(podcast) === 'public' && series.visibility !== 'public') {
+    fail('排程要求自動公開，但目標 series 尚未 public；請先完成一次性的系列發布/RSS 設定並重新執行 bind。');
+  }
+
+  const sourceCwd = path.resolve(expandHome(args['source-cwd'] || podcast.sourceCwd || process.cwd()));
+  let sourceStat = null;
+  try {
+    sourceStat = fs.statSync(sourceCwd);
+  } catch {
+    // The error below includes the resolved path without leaking file contents.
+  }
+  if (!sourceStat?.isDirectory()) fail(`--source-cwd 不是可讀目錄：${sourceCwd}`);
+
+  const rawMaxCredits = args['max-credits-per-run'] ?? podcast?.schedule?.maxCreditsPerRun;
+  const maxCreditsPerRun = Number(rawMaxCredits);
+  if (!Number.isInteger(maxCreditsPerRun) || maxCreditsPerRun < 0) {
+    fail('缺少有效的 --max-credits-per-run <非負整數>；排程必須有使用者核准的單次 credits 上限。');
+  }
+
+  return { projectDir, podcastPath, podcast, sourceCwd, maxCreditsPerRun };
+}
+
+export function buildSchedulePrompt({ slug, projectDir, sourceCwd, podcast, maxCreditsPerRun }) {
+  const series = sanitizeScheduleValue(podcast?.seriesSnapshot || {});
+  const customPrompts = sanitizeScheduleValue(series?.customPrompts || {});
+  const extraSources = sanitizeScheduleValue(Array.isArray(podcast?.extraSources) ? podcast.extraSources : []);
+  const episodeVisibility = configuredEpisodeVisibility(podcast);
+  const rssState = series?.rssEnabled === true ? 'enabled' : 'disabled';
+  const sourceManifest = [
+    {
+      type: 'project_journal',
+      location: path.join(projectDir, 'entries'),
+      priority: 'required',
+      freshness: `newer than ledger.json lastCoveredAt`,
+      handling: 'local only; summarize decisions, pivots, milestones, incidents, and meaningful progress',
+    },
+    {
+      type: 'git_repository',
+      location: sourceCwd,
+      priority: 'required',
+      freshness: 'commits newer than ledger.json lastCoveredAt',
+      handling: 'local git digest; exclude credentials, build artifacts, and unrelated files',
+    },
+    ...extraSources.map((source) => ({
+      type: 'extra_source',
+      priority: 'as configured',
+      source,
+    })),
+  ];
+  const target = {
+    seriesId: podcast.seriesId,
+    title: series?.title || null,
+    topic: series?.topic || null,
+    language: series?.language || null,
+    hostIds: Array.isArray(series?.hostIds) ? series.hostIds : [],
+    episodeFormat: series?.episodeFormat || null,
+    targetDurationMinutes: series?.targetDurationMinutes || null,
+    style: series?.style || null,
+    perspective: series?.perspective || null,
+    generationMode: podcast.mode || 'script_to_audio',
+    episodeVisibility,
+    rssState,
+    maxCreditsPerRun,
+  };
+
+  return `# NewsTune 排程集數執行契約：${slug}
+
+這是使用者在建立排程時已核准的無人值守 recurring automation。每次觸發只生成並上傳一集；不要詢問問題、不要等待逐次確認。API 的 quote／preview／confirmation token 若為技術必要步驟，必須在本契約範圍內自動完成，不得轉成新的人工確認。
+
+## 目標系列與執行上限
+
+${JSON.stringify(target, null, 2)}
+
+每次執行開始時仍須以 GET /api/v1/series/${podcast.seriesId} 讀取 live series、全部非空 customPrompts、目前主持人與最近集數。若 live target、host、generation mode、來源規則、單次 credits 上限、visibility 或 RSS 狀態和本契約有實質衝突，停止本次執行、不要推進 checkpoint，並記錄差異；不得自行擴大授權。
+
+## 資料來源與收集位置
+
+${JSON.stringify(sourceManifest, null, 2)}
+
+只收集 ledger.json 的 lastCoveredAt 之後的新資料。project journal 與 Git 是必要來源；extraSources 依各自設定處理。遵守 required／preferred／background／excluded、freshness、citation、provenance 與 local/cloud 邊界。不得讀取或輸出 API key、token、cookie、密碼、.env、憑證、build/dist/node_modules 或無關私人檔案。若 gatherContent 指定網路搜尋、RSS、URL、Notion、Google Docs 或 MCP 來源，逐一執行並保留來源出處，不可只做泛用搜尋取代指定來源。
+
+## 系列 Custom Prompts 與發文風格
+
+${JSON.stringify(customPrompts, null, 2)}
+
+上述 customPrompts 是節目長期製作規範，必須全部套用。另遵守 live series 的 audience、purpose、style、perspective、episode format、duration、host personas 與最近集數連續性。不要重複前集已完整涵蓋的內容；保持固定開場、段落節奏、主持人分工、語言、術語處理、結尾與 CTA。若 customPrompts 為空或無法讀取，不可憑空改寫節目定位；停止並回報契約資訊不足。
+
+## 每次排程執行流程
+
+1. 使用 newstune-agent-api skill。執行 scripts/episode_from_journal.mjs collect --project ${slug} --cwd ${JSON.stringify(sourceCwd)}，讀取 journal、Git、extraSources、live series、customPrompts 與 prior episodes。
+2. 若自上期以來沒有足以成集的重要 decision、pivot、milestone、incident 或實質進展，跳過本期並記錄原因；不要勉強產生內容，也不要推進 checkpoint。
+3. 依全部來源與 Custom Prompts 撰寫完整腳本。只使用 live host 名稱作為「Name: dialogue」標籤，並完成事實、引用、隱私、重複、長度與發布前檢查。
+4. 以 scripts/episode_from_journal.mjs submit 提交一集並輪詢到 succeeded 或 failed。Idempotency-Key 必須由 project slug 與本次排程時間窗決定，同一時間窗重試時重用，禁止因重試產生重複集數。
+5. 單次 quote 不得超過 ${maxCreditsPerRun} credits。若餘額不足或 quote 超限，立即跳過，不得購買 credits、切換帳號、降低規格後偷跑或自動重試扣款。
+6. 本契約的 episode visibility 是 ${episodeVisibility}。${episodeVisibility === 'public'
+    ? '目標 series 必須已是 public；生成完成後自動確認該集為 public，必要時執行單集 visibility publish 以取得 publicSlug。RSS 維持既有狀態，不得在排程中 enable/disable。'
+    : '本次只上傳 private 集數，不得自行公開。'}
+7. 只有在生成到終態、visibility 符合契約、${episodeVisibility === 'public' ? 'public episode URL 可讀且 RSS enabled 時已確認 feed 收錄' : 'private episode URL 已取得'}後，才更新 ledger/checkpoint 並標記成功。
+
+## 禁止擴權與輸出
+
+本排程不授權建立或切換 series/host/voice、語音克隆、修改來源或 Custom Prompts、提高 credits 上限、變更 slug/SEO、enable/disable RSS，或發布本次新集以外的集數。遇到這些需求時停止並留下可讀的 skipped/failed 原因，不要在 headless run 中詢問使用者。
+
+最終輸出必須包含：本次狀態、episode number/title、使用的來源摘要、credits quote/charged、job 終態、checkpoint 是否推進、episode URL、${episodeVisibility === 'public' ? 'public URL 與 RSS 驗證' : 'private visibility 驗證'}；若跳過或失敗，輸出精確原因與未執行的寫入。`;
+}
+
+export function buildScheduleProgramArguments(engine, slug, scheduleModel, prompt) {
   const engineArgs = engine === 'codex'
     ? [resolveBinary('codex'), 'exec', '--skip-git-repo-check', '--full-auto', prompt]
     : [resolveBinary('claude'), '-p', prompt, '--model', scheduleModel || DEFAULT_SCHEDULE_MODEL, '--dangerously-skip-permissions'];
@@ -465,6 +632,38 @@ function parseTimeOption(value) {
   return { hour, minute };
 }
 
+function createSchedulePromptArtifact(args, slug) {
+  const context = schedulePromptContext(args, slug);
+  const prompt = buildSchedulePrompt({ slug, ...context });
+  const promptPath = path.join(context.projectDir, 'schedule.prompt.md');
+  fs.mkdirSync(context.projectDir, { recursive: true });
+  fs.writeFileSync(promptPath, `${prompt}\n`);
+  const promptSha256 = createHash('sha256').update(prompt).digest('hex');
+  return {
+    ...context,
+    prompt,
+    promptPath,
+    promptSha256,
+    episodeVisibility: configuredEpisodeVisibility(context.podcast),
+  };
+}
+
+function schedulePromptCommand(args) {
+  const slug = requireSafeSlug(args);
+  const artifact = createSchedulePromptArtifact(args, slug);
+  console.log(JSON.stringify({
+    ok: true,
+    project: slug,
+    seriesId: artifact.podcast.seriesId,
+    sourceCwd: artifact.sourceCwd,
+    maxCreditsPerRun: artifact.maxCreditsPerRun,
+    episodeVisibility: artifact.episodeVisibility,
+    promptPath: artifact.promptPath,
+    promptSha256: artifact.promptSha256,
+    prompt: artifact.prompt,
+  }, null, 2));
+}
+
 function scheduleCommand(args) {
   const slug = requireSafeSlug(args);
   const cadence = String(args.cadence || 'weekly');
@@ -482,10 +681,8 @@ function scheduleCommand(args) {
   if (engineArg && engineArg !== 'claude' && engineArg !== 'codex') fail('--engine 只接受 claude 或 codex');
   const engine = engineArg || (config.engine === 'codex' ? 'codex' : 'claude');
   const scheduleModel = String(args.model || config.scheduleModel || DEFAULT_SCHEDULE_MODEL);
-
-  const journalRoot = process.env.NEWSTUNE_JOURNAL_ROOT || String(config.journalRoot || '');
-  const workingDirectory = journalRoot ? path.join(journalRoot, slug) : os.homedir();
-  if (journalRoot) fs.mkdirSync(workingDirectory, { recursive: true });
+  const artifact = createSchedulePromptArtifact(args, slug);
+  const workingDirectory = artifact.projectDir;
 
   const logsDir = path.join(getConfigDir(), 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
@@ -503,7 +700,7 @@ function scheduleCommand(args) {
   const plistPath = path.join(launchAgentsDir, `${label}.plist`);
   const plist = buildPlist({
     label,
-    programArguments: buildScheduleProgramArguments(engine, slug, scheduleModel),
+    programArguments: buildScheduleProgramArguments(engine, slug, scheduleModel, artifact.prompt),
     calendar,
     environment,
     workingDirectory,
@@ -529,8 +726,23 @@ function scheduleCommand(args) {
     }
   }
 
-  appendLog(`[setup] schedule project=${slug} cadence=${cadence} engine=${engine} loaded=${loaded}`);
-  console.log(JSON.stringify({ ok: loaded !== 'failed', project: slug, label, plist: plistPath, cadence, calendar, engine, loaded }, null, 2));
+  appendLog(`[setup] schedule project=${slug} cadence=${cadence} engine=${engine} prompt=${artifact.promptSha256} visibility=${artifact.episodeVisibility} loaded=${loaded}`);
+  console.log(JSON.stringify({
+    ok: loaded !== 'failed',
+    project: slug,
+    label,
+    plist: plistPath,
+    cadence,
+    calendar,
+    engine,
+    loaded,
+    seriesId: artifact.podcast.seriesId,
+    sourceCwd: artifact.sourceCwd,
+    maxCreditsPerRun: artifact.maxCreditsPerRun,
+    episodeVisibility: artifact.episodeVisibility,
+    promptPath: artifact.promptPath,
+    promptSha256: artifact.promptSha256,
+  }, null, 2));
   if (loaded === 'failed') process.exit(1);
 }
 
@@ -657,6 +869,7 @@ async function main() {
   if (command === 'pause') return setEnabled(false);
   if (command === 'resume') return setEnabled(true);
   if (command === 'status') return statusCommand(args);
+  if (command === 'schedule-prompt') return schedulePromptCommand(args);
   if (command === 'schedule') return scheduleCommand(args);
   if (command === 'unschedule') return unscheduleCommand(args);
   if (command === 'onboarding') return onboardingCommand(args);

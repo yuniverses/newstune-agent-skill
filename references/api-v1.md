@@ -52,7 +52,7 @@ Read endpoints require their explicit read scopes. A key that creates and then r
 - Default to private series and private episodes unless the user explicitly asks to publish.
 - Any `visibility: "public"`, `publicSlug`, `seoTitle`, or `seoDescription` requires `publish:write`.
 - RSS requires a public series and the `rss:publish` scope.
-- For a launch or exact publishing change, preview `POST /api/v1/series/{seriesId}/publish-exact` with `dryRun: true`, enumerate both immediate and future-public effects (including `futurePublicEpisodesAfterAction`), wait for approval of both, then execute with the returned revision and a stable idempotency key. Use `rssAction: "preserve"` unless the user explicitly asks for `enable` or `disable`.
+- For an interactive launch or exact publishing change, preview `POST /api/v1/series/{seriesId}/publish-exact` with `dryRun: true`, enumerate both immediate and future-public effects (including `futurePublicEpisodesAfterAction`), wait for approval of both, then execute with the returned revision and a stable idempotency key. A covered recurring run may preview and execute automatically only when the result is exactly the newly generated episode and the unchanged approved RSS/slug/SEO scope. Use `rssAction: "preserve"` unless the user explicitly asks for `enable` or `disable` during schedule setup.
 - Standalone TTS and script-to-audio only accept voices the caller may access: platform/builtin voices, user-owned voices, adopted external voices, or public/community voices. Arbitrary provider reference IDs are rejected.
 - A voice already returned as accessible may be previewed or selected even when its display name refers to a celebrity or public figure. Do not block solely from the name or infer endorsement; show a short non-deception/endorsement advisory instead. This selection rule is separate from uploading an audio sample to create a new clone.
 - External voice adoption requires `voiceSourceAcknowledged: true`.
@@ -98,7 +98,33 @@ Example SourceManifest entry:
 }
 ```
 
-Final confirmation before any creating POST should include title/topic, use case, source summary, source privacy policy, host IDs, voice references, generation mode, visibility/RSS, and known credit implications.
+Final confirmation before an interactive/manual creating POST should include title/topic, use case, source summary, source privacy policy, host IDs, voice references, generation mode, visibility/RSS, and known credit implications. For a recurring automation, collect that approval once through the schedule contract below; covered occurrences do not ask again.
+
+## Recurring Schedule Prompt Contract
+
+The host scheduler owns cadence and timezone. Its task prompt owns the complete production behavior and must be self-contained. Never create a schedule with a prompt such as "make the next episode" or "run the NewsTune skill" alone.
+
+Before activation, show the user the complete contract and obtain one explicit approval for recurring generation, credit use up to the stated ceiling, upload, and automatic publication. A compliant task prompt contains all of these sections:
+
+```text
+Task: Generate and publish one scheduled NewsTune episode. This is a headless run covered by the recurring authorization approved when this schedule was created. Do not ask for confirmation.
+
+Target: series ID/title; language; host IDs; generation mode; duration/format; maximum credits per run.
+
+Sources: exact URL/RSS/YouTube/MCP/Notion/Docs targets, web-search queries/domains, local folders/files, CLI or journal paths. For each source include required/preferred/background/excluded status, freshness window, citation requirement, local/cloud boundary, and checkpoint/update rule.
+
+Editorial brief: audience, use case, angle, tone, structure, recurring segments, host roles, terminology, required/prohibited content, ending/CTA, and every non-empty customPrompts field from the series.
+
+Run procedure: read GET /api/v1/series/{seriesId} and recent episodes; read every customPrompts field; collect only material newer than the checkpoint; skip if below the minimum-material rule; write/submit one episode with a stable idempotency key for this occurrence; poll GET /api/v1/jobs/{jobId} to a terminal state.
+
+Publishing: use the approved episode visibility. For public release, require the target series to already be public, make the completed episode public, preserve the approved RSS state, and verify the public episode URL plus feed inclusion when RSS is enabled.
+
+Failure policy: no questions and no per-run approval. If credits are insufficient, inputs or quote exceed the contract, source/editorial rules changed, or publishing would affect another episode/RSS/slug/SEO setting, do not broaden scope. Skip or pause, leave the checkpoint unchanged, and report the exact reason. Never purchase credits or retry billing automatically.
+
+Output: episode number/title, generation status, credits charged, sources used, checkpoint advanced, public URL, RSS verification, or a precise skipped/failed reason.
+```
+
+Manual write confirmation remains required outside that schedule. Updating any target, source, editorial rule, host/voice, generation mode, credit ceiling, visibility, RSS action, slug/SEO, or episode scope materially changes the contract and requires the user to approve the updated schedule once before it resumes.
 
 ## Key Management
 
@@ -504,9 +530,9 @@ POST /api/v1/series/{seriesId}/publish-exact
 }
 ```
 
-The preview returns a `revision`, `selectedEpisodeNumbers` plus selected episode titles, `additionalExistingPublicEpisodeNumbers`, `publicEpisodeNumbersAfterAction`, `webPublicEpisodeNumbersAfterAction`, `rssEpisodeNumbersAfterAction`, titled `rssEpisodesAfterAction`, `futurePublicEpisodeNumbersAfterAction`, titled/status-bearing `futurePublicEpisodesAfterAction`, final `series.seoTitle`/`series.seoDescription`, and complete current/resulting RSS metadata. Future-public entries are still generating and not public-readable yet, but may become public automatically when generation completes. If RSS will expose a configured owner contact, only `ownerEmailMasked` is returned and `ownerEmailWillBePublic` is `true`. Show every field and explicitly obtain approval for both the immediate and future-public effects.
+The preview returns a `revision`, `selectedEpisodeNumbers` plus selected episode titles, `additionalExistingPublicEpisodeNumbers`, `publicEpisodeNumbersAfterAction`, `webPublicEpisodeNumbersAfterAction`, `rssEpisodeNumbersAfterAction`, titled `rssEpisodesAfterAction`, `futurePublicEpisodeNumbersAfterAction`, titled/status-bearing `futurePublicEpisodesAfterAction`, final `series.seoTitle`/`series.seoDescription`, and complete current/resulting RSS metadata. Future-public entries are still generating and not public-readable yet, but may become public automatically when generation completes. If RSS will expose a configured owner contact, only `ownerEmailMasked` is returned and `ownerEmailWillBePublic` is `true`. For interactive work, show every field and explicitly obtain approval for both the immediate and future-public effects. In a covered recurring run, compare every field to the stored one-new-episode contract and auto-execute only when all effects fit it exactly.
 
-Show that complete preview and wait for explicit approval. Then execute with identical publishing inputs, the preview revision, and a stable idempotency key:
+For interactive work, show that complete preview and wait for explicit approval. For a covered recurring run, do not ask again when the exact preview remains within contract. Then execute with identical publishing inputs, the preview revision, and a stable idempotency key:
 
 ```http
 POST /api/v1/series/{seriesId}/publish-exact

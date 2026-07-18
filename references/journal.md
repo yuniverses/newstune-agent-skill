@@ -34,6 +34,7 @@ Journal root (`config.journalRoot`, overridable with `NEWSTUNE_JOURNAL_ROOT`), o
 <journalRoot>/<project-slug>/
   project.md                          # project concept, generated on first recording
   podcast.json                        # series binding (see Podcast Binding below)
+  schedule.prompt.md                  # approved self-contained automation task + audit copy
   ledger.json                         # locally-known episodes + lastCoveredAt
   entries/YYYY-MM-DD_<kebab-title>.md # journal entries; name collisions get a -2, -3... suffix
 ```
@@ -155,7 +156,7 @@ Codex (`~/.codex/hooks.json`, flat entries; `config.toml`'s `notify` is delibera
 ```json
 {
   "seriesId": "srs_...",
-  "seriesSnapshot": { "title": "...", "topic": "...", "language": "zh-TW", "hostIds": ["..."], "episodeFormat": "brief", "visibility": "public", "targetDurationMinutes": 10 },
+  "seriesSnapshot": { "title": "...", "topic": "...", "language": "zh-TW", "hostIds": ["..."], "episodeFormat": "brief", "visibility": "public", "targetDurationMinutes": 10, "style": "...", "perspective": "...", "rssEnabled": true, "customPrompts": { "gatherContent": "...", "generateScript": "..." } },
   "cadence": "weekly",
   "mode": "script_to_audio",
   "materialConsent": false,
@@ -165,7 +166,9 @@ Codex (`~/.codex/hooks.json`, flat entries; `config.toml`'s `notify` is delibera
 }
 ```
 
-`seriesSnapshot.visibility` is persisted by `bind` (from `GET /api/v1/series/:id` or `--snapshot-json`). `episodeVisibility` is optional (`"public"` | `"private"`); when absent, `submit` falls back to the series default — **a public series airs its episodes by default** (`public`), any other series defaults to `private`. Full resolution order used by `submit`: `--visibility` flag → `episodeVisibility` → series default. `bind` prints the resolved default so the user knows what future submits will do.
+`seriesSnapshot.visibility` plus reusable style, perspective, RSS state, and non-empty `customPrompts` are persisted by `bind` (from `GET /api/v1/series/:id` or `--snapshot-json`). `episodeVisibility` is optional (`"public"` | `"private"`); when absent, `submit` falls back to the series default — **a public series airs its episodes by default** (`public`), any other series defaults to `private`. Full resolution order used by `submit`: `--visibility` flag → `episodeVisibility` → series default. `bind` prints the resolved default so the user knows what future submits will do.
+
+`submit` derives its idempotency key from project slug, the previous checkpoint, title/summary, and exact script unless `--idempotency-key` is supplied. The same scheduled occurrence therefore replays instead of creating a duplicate. Public execution never falls back to private: missing `publish:write`, a failed visibility update, or a missing `publicSlug` fails before `ledger.json`/`lastCoveredAt` advance.
 
 `ledger.json` (appended by `submit` after the job reaches a terminal state):
 
@@ -182,12 +185,23 @@ Codex (`~/.codex/hooks.json`, flat entries; `config.toml`'s `notify` is delibera
 
 `collect` selects entries dated after `lastCoveredAt` (ledger first, then podcast.json), orders `decision`/`pivot`/`milestone` first, adds a git digest (`--cwd` points at the code repo; non-git directories are tolerated), and prefers `GET /api/v1/series/{seriesId}/episodes` for `priorEpisodes` with a `ledger.json` fallback on 404. It performs no LLM calls — the invoking agent writes the script.
 
-## launchd Scheduling (macOS)
+## Native and launchd Scheduling
 
-`journal_setup.mjs schedule --project <slug> --cadence weekly|daily [--day sun..sat] [--time HH:MM] [--engine claude|codex]` writes:
+Prefer Codex Schedule or the host's native recurring automation. Generate the exact task prompt first:
+
+```bash
+journal_setup.mjs schedule-prompt --project <slug> --source-cwd <repo> --max-credits-per-run <n>
+```
+
+The JSON response includes `prompt`, `promptPath`, and `promptSha256`. Put `prompt` unchanged into the native automation; configure cadence/timezone through the scheduler itself. `schedule.prompt.md` is an audit copy, while the prompt embedded in the automation is authoritative. Materially changing its target, sources, editorial brief, hosts, mode, credit ceiling, visibility, RSS, slug/SEO, or episode scope requires one new user approval before updating the schedule.
+
+Preflight is strict: refresh `bind` first. The helper requires live host IDs, `script_to_audio`, non-empty `customPrompts.gatherContent` and `customPrompts.generateScript`, a valid per-run credit ceiling, and a public series when `episodeVisibility` resolves to `public`. It refuses to install a timer with an incomplete source/style brief or an impossible automatic-publication target.
+
+For the macOS fallback, `journal_setup.mjs schedule --project <slug> --source-cwd <repo> --max-credits-per-run <n> --cadence weekly|daily [--day sun..sat] [--time HH:MM] [--engine claude|codex]` writes:
 
 - Plist: `~/Library/LaunchAgents/com.newstune.podcast.<slug>.plist` (label `com.newstune.podcast.<slug>`).
-- `ProgramArguments`: the resolved engine binary running the scheduled-episode prompt headless — `claude -p <prompt> --dangerously-skip-permissions` or `codex exec --skip-git-repo-check --full-auto <prompt>`. The zh-TW prompt tells the engine to use this skill: collect → write per the Continuity Contract → submit, never ask questions, and skip the issue when material is insufficient.
+- `ProgramArguments`: the resolved engine binary running the same detailed prompt headless — `claude -p <prompt> --dangerously-skip-permissions` or `codex exec --skip-git-repo-check --full-auto <prompt>`.
+- Prompt contents: exact series/hosts/mode/visibility/RSS/credit ceiling; journal, Git, and every `extraSources` location; freshness/checkpoint/privacy rules; all persisted `customPrompts`; automatic submit/poll/publish steps; no-interaction and skip/failure boundaries.
 - `StartCalendarInterval`: `Hour`/`Minute`, plus `Weekday` (0 = Sunday) for weekly cadence.
 - `EnvironmentVariables`: `NEWSTUNE_JOURNAL_SKIP=1` plus a sane `PATH`; `NEWSTUNE_AGENT_CONFIG_DIR`/`NEWSTUNE_JOURNAL_ROOT` are propagated when set at schedule time.
 - `WorkingDirectory`: `<journalRoot>/<slug>`; `StandardOutPath`/`StandardErrorPath`: `logs/schedule.<slug>.log` / `.err.log` in the config dir.
@@ -211,6 +225,7 @@ launchctl print gui/$(id -u)/com.newstune.podcast.<slug>
 | `--claude-settings-path` / `--codex-hooks-path` | setup | Redirect hook files (tests must use these — never write the real ones) |
 | `--launch-agents-dir` | setup | Redirect plist directory |
 | `--no-load` / `NEWSTUNE_SETUP_SKIP_LAUNCHCTL=1` | setup | Write the plist without calling `launchctl` |
+| `--source-cwd` / `--max-credits-per-run` | schedule-prompt/schedule | Exact Git source directory and user-approved per-run credit ceiling; both are embedded in the prompt |
 | `NEWSTUNE_GATE_RECORD_SCRIPT` | gate | Spawn a different record script (tests) |
 | `--engine-cmd` / `NEWSTUNE_RECORD_ENGINE_CMD` | record | Replace the whole engine command (prompt appended as the last argv) |
 
